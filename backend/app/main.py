@@ -14,8 +14,9 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .ai import AIError, AIUnavailable, engine
 from .config import settings
-from .database import init_db
-from .routers import auth, chats, dashboard, flashcards, notes, planner, quiz, system
+from .security import sync_admin
+from .database import SessionLocal, init_db
+from .routers import admin, ai, auth, chats, dashboard, flashcards, notes, planner, quiz, system
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
 
@@ -23,6 +24,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    with SessionLocal() as db:
+        sync_admin(db)
     # Warm the provider model lists without delaying startup.
     threading.Thread(target=engine.discover, daemon=True).start()
     yield
@@ -55,7 +58,7 @@ def create_app() -> FastAPI:
         named = message if message.lower().startswith(field.lower()) else f"{field}: {message}"
         return JSONResponse(status_code=422, content={"detail": named if field else message})
 
-    for module in (auth, chats, quiz, flashcards, notes, planner, dashboard, system):
+    for module in (auth, chats, quiz, flashcards, notes, planner, dashboard, ai, admin, system):
         app.include_router(module.router)
 
     @app.get("/", include_in_schema=False)

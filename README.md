@@ -22,16 +22,16 @@ automatically when a model hits its rate limit.
 ```
 backend/
   main.py              entry point (uvicorn main:app)
-  ai_models.json       the AI fallback chain — edit this to add models
-  .env.example         copy to .env and add your API keys
+  ai_models.json       your AI providers and models (edited from Settings)
+  .env.example         copy to .env; API keys are saved here
   app/
     main.py            app factory, CORS, error handlers
     config.py          settings from the environment
     database.py        engine, sessions, additive migrations
     models.py          SQLAlchemy models
     security.py        password hashing, JWT, current-user dependency
-    ai/                fallback engine, prompts, JSON parsing
-    routers/           auth, chats, quiz, flashcards, notes, planner, dashboard, system
+    ai/                fallback engine, provider presets, config store, prompts
+    routers/           auth, chats, quiz, flashcards, notes, planner, dashboard, ai, admin, system
 frontend/
   src/
     components/ui/     Icon family, Button, Modal, Markdown, primitives
@@ -49,7 +49,7 @@ frontend/
 ```bash
 cd backend
 pip install -r requirements.txt
-copy .env.example .env        # then add at least one API key
+copy .env.example .env        # keys can be added later in Settings
 uvicorn main:app --reload
 ```
 
@@ -64,48 +64,71 @@ npm run dev
 Open http://localhost:5173. The API runs on http://127.0.0.1:8000 (interactive docs at `/docs`).
 To point the frontend at another API, set `VITE_API_URL` in `frontend/.env.local`.
 
-## The AI fallback chain
+## Accounts and the administrator
 
-Every AI request walks the list in `backend/ai_models.json` from the top — best model first,
-smallest last — and uses the first model that answers.
+The administrator signs in like anyone else, with a username and password you set in
+`backend/.env`:
+
+```
+ADMIN_USERNAME=admin@zyqra.com
+ADMIN_PASSWORD=choose-your-own      # at least 8 characters
+```
+
+The account is created, and its password updated, the next time you sign in — no restart.
+Nobody else can register that username.
+
+| | Everyone | Administrator |
+|---|---|---|
+| Use every study feature | yes | yes |
+| Choose their own models from the connected providers | yes | edits the default list |
+| Connect providers, enter API keys, add models by ID | | yes |
+| "Free models only" switch | | yes |
+| **Settings → Admin**: accounts and activity, make or remove administrators, set a new password, delete an account, open or close sign-ups | | yes |
+
+## AI providers and models
+
+Open **Settings → AI models**. Nothing here needs a restart.
+
+1. **Add a provider** (administrator). Go to *Providers → Add provider* and type its name
+   (Gemini, Groq, NVIDIA NIM, Mistral, OpenRouter, Cloudflare, Ollama, …) or paste the URL
+   of any OpenAI-compatible API. Enter the API key.
+2. **Choose models** (everyone). Open a provider to see every model it offers, each marked
+   **Free** or **Paid** where that is known, and tick the ones you want.
+3. **Use them.** Only the models you ticked appear in the chat's model menu, grouped by
+   provider. Untick a model to remove it.
+
+The administrator's list is the **default** everyone starts with. As soon as another user
+changes anything, they get their own list, which affects only them; *Use the default* puts
+it back.
+
+**Free models only** (on by default) stops Zyqra from ever calling a model that is billed,
+including as a fallback, for every user.
+
+### Automatic fallback
+
+The model list is also the fallback order. With the chat set to **Auto**, each request tries the
+list from the top and uses the first model that answers.
 
 - A model that returns a rate-limit error is put on **cooldown** for as long as the provider
   says (or an increasing back-off if it doesn't say) and the next model takes over.
 - A daily quota error cools the model until the provider's daily reset, re-checking hourly.
 - When the cooldown ends the model is used again, so traffic **returns to the best model
   automatically**.
-- Providers with no key in `.env` are skipped, so unused entries are harmless.
 
-Live status, per-model **Test** buttons and each provider's current model list are in
-**Settings → AI models**.
+Move a model up or down to change its priority, or switch it off without removing it.
 
-### Adding a model
+### Where things are stored
 
-Add one line to `"chain"` in `ai_models.json`, at the position it should be tried:
-
-```json
-{ "provider": "groq", "model": "openai/gpt-oss-120b", "label": "GPT-OSS 120B (Groq)", "tier": "strong" }
-```
-
-### Adding a provider
-
-Any OpenAI-compatible API works. Add it to `"providers"`, put its key in `.env`, then list
-its models in `"chain"`:
-
-```json
-"myprovider": {
-  "name": "My Provider",
-  "base_url": "https://api.example.com/v1",
-  "key_env": "MYPROVIDER_API_KEY"
-}
-```
-
-Both files are re-read when they change — no restart needed. One key variable may hold
-several comma-separated keys; each is tried in turn.
+- API keys go into `backend/.env` and nowhere else. The app never sends a saved key back to
+  the browser. One variable may hold several comma-separated keys; each is tried in turn.
+- Providers and the model list live in `backend/ai_models.json`, which you can also edit by
+  hand. Built-in provider definitions are in `backend/app/ai/presets.py`.
+- A user's own model list is stored on their account in the database.
 
 ## Notes
 
 - `backend/.env`, the SQLite database and `backend/.secret_key` are git-ignored. Never commit API keys.
 - The database upgrades itself in place on startup (columns and tables are only ever added).
-- Model ids and free-tier limits change often. If a model shows "Not listed by provider"
-  in Settings, pick a current id from that provider's model list and update `ai_models.json`.
+- Model ids and free tiers change often. If a model shows "Not offered by provider" in
+  Settings, remove it and tick a current one from that provider's list. Free / Paid labels
+  follow each provider's published terms — confirm limits in the provider's own console.

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { scoreTone } from "../../lib/format";
-import type { ModelMeta } from "../../lib/types";
+import type { Free, ModelMeta } from "../../lib/types";
 import Icon from "./Icon";
 import type { IconName } from "./Icon";
 
@@ -109,6 +109,40 @@ export function ModelBadge({ model }: { model: Pick<ModelMeta, "label" | "fallba
       <Icon name={model.fallback ? "repeat" : "sparkles"} size={12} />
       {model.label}
     </span>
+  );
+}
+
+/** Free / Paid tag for a model; renders nothing when the provider doesn't say. */
+export function FreeBadge({ free }: { free: Free }) {
+  if (free === null) return null;
+  return free ? (
+    <span className="badge success" title="Free to use, within the provider's rate limits.">Free</span>
+  ) : (
+    <span className="badge warning" title="The provider bills for this model.">Paid</span>
+  );
+}
+
+interface SwitchProps {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  disabled?: boolean;
+}
+
+export function Switch({ checked, onChange, label, disabled }: SwitchProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      className={`switch ${checked ? "on" : ""}`}
+      onClick={() => onChange(!checked)}
+    >
+      <i />
+    </button>
   );
 }
 

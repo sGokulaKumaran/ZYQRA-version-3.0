@@ -25,6 +25,7 @@ import httpx
 from dotenv import dotenv_values
 
 from ..config import ENV_FILE, settings
+from .presets import PRESETS
 
 log = logging.getLogger("zyqra.ai")
 
@@ -47,6 +48,16 @@ _RETRY_HINTS = (
     re.compile(r"try again in\s+([\dhms.]+)", re.IGNORECASE),
     re.compile(r'"retryDelay"\s*:\s*"([\dhms.]+)"'),
 )
+
+# Models a provider lists that cannot hold a conversation.
+_NON_CHAT = re.compile(
+    r"embed|whisper|tts|speech|transcri|rerank|moderation|guard|imagen|image|dall-e|diffusion"
+    r"|flux|sdxl|veo-|lyria|audio|\bbge\b|clip|\bocr\b|\baqa\b",
+    re.IGNORECASE,
+)
+_NON_CHAT_TYPES = {"embedding", "embeddings", "image", "audio", "rerank", "moderation", "video", "transcribe", "tts"}
+_CONTEXT_KEYS = ("context_length", "context_window", "inputTokenLimit", "max_context_length")
+_PRICE_KEYS = ("prompt", "completion", "input", "output")
 
 
 # ─── Errors & results ──────────────────────────────────────────────────
@@ -105,12 +116,25 @@ class Provider:
     headers: dict[str, str] = field(default_factory=dict)
     signup_url: str = ""
     free_tier: str = ""
+    free: str = "auto"  # all | none | auto - see presets.py
+    free_pattern: str = ""
+    requires_key: bool = True
+    local: bool = False
+    custom: bool = False
+    models_url: str = ""
+    models_id_field: str = "id"
+    fields: list[dict] = field(default_factory=list)  # extra .env values the URL needs
 
-    def keys(self) -> list[str]:
+    def real_keys(self) -> list[str]:
         return [k.strip() for k in os.getenv(self.key_env, "").split(",") if k.strip()]
 
-    def url(self) -> str | None:
-        """base_url with {ENV_VAR} placeholders filled; None if one is unset."""
+    def keys(self) -> list[str]:
+        """Keys to try in turn; a keyless (local) provider gets one empty slot."""
+        return self.real_keys() or ([] if self.requires_key else [""])
+
+    @staticmethod
+    def _fill(template: str) -> str | None:
+        """Fill {ENV_VAR} placeholders; None if one is unset."""
         missing = False
 
         def fill(match: re.Match) -> str:
@@ -119,11 +143,32 @@ class Provider:
             missing = missing or not value
             return value
 
-        resolved = re.sub(r"\{([A-Z0-9_]+)\}", fill, self.base_url).rstrip("/")
+        resolved = re.sub(r"\{([A-Z0-9_]+)\}", fill, template).rstrip("/")
         return None if missing else resolved
+
+    def url(self) -> str | None:
+        return self._fill(self.base_url)
+
+    def models_endpoint(self) -> str | None:
+        if self.models_url:
+            return self._fill(self.models_url)
+        base = self.url()
+        return f"{base}/models" if base else None
 
     def ready(self) -> bool:
         return bool(self.keys()) and self.url() is not None
+
+    def is_free(self, model: str, info: dict | None) -> bool | None:
+        """True / False when known, None when it can't be told."""
+        if self.free == "all":
+            return True
+        if self.free == "none":
+            return False
+        if self.free_pattern:
+            return bool(re.search(self.free_pattern, model, re.IGNORECASE))
+        if info and info.get("price_free") is not None:
+            return info["price_free"]
+        return True if model.endswith(":free") else None
 
 
 @dataclass
@@ -131,9 +176,10 @@ class ModelEntry:
     provider: str
     model: str
     label: str
-    tier: str = "strong"
+    tier: str = ""
     enabled: bool = True
     max_input_chars: int | None = None
+    free: bool | None = None  # set to override what the provider reports
 
     @property
     def id(self) -> str:
@@ -157,6 +203,15 @@ class ModelStats:
     last_latency_ms: int = 0
     last_error: str = ""
     last_error_at: float = 0.0
+
+
+@dataclass
+class Discovery:
+    """A provider's own model list, as last fetched."""
+
+    at: float = 0.0
+    models: dict[str, dict] | None = None  # None: never fetched or the fetch failed
+    error: str = ""
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────
@@ -257,6 +312,65 @@ def _fit(messages: list[Message], limit: int | None) -> list[Message]:
     return system + kept[::-1]
 
 
+def _number(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_models(body, id_field: str = "id") -> dict[str, dict]:
+    """Normalise a provider's model list into {id: {name, context, price_free, chat}}."""
+    items = body
+    if isinstance(body, dict):
+        items = next((body[k] for k in ("data", "models", "result") if isinstance(body.get(k), list)), [])
+    found: dict[str, dict] = {}
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, str):
+            item = {"id": item}
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get(id_field) or item.get("id") or "").removeprefix("models/").strip()
+        if not model_id:
+            continue
+
+        name = "" if id_field == "name" else item.get("name") or item.get("display_name") or item.get("displayName")
+        name = str(name or "").removeprefix("models/")
+        context = next(
+            (int(value) for key in _CONTEXT_KEYS
+             if isinstance(value := item.get(key), (int, float)) and value > 0),
+            None,
+        )
+        price_free = None
+        pricing = item.get("pricing")
+        if isinstance(pricing, dict):
+            prices = [n for key in _PRICE_KEYS if (n := _number(pricing.get(key))) is not None]
+            if prices and min(prices) >= 0:  # negative means "varies" (routers)
+                price_free = max(prices) == 0
+        architecture = item.get("architecture")
+        outputs = architecture.get("output_modalities") if isinstance(architecture, dict) else None
+        chat = (
+            str(item.get("type") or "").lower() not in _NON_CHAT_TYPES
+            and not _NON_CHAT.search(model_id)
+            and (not isinstance(outputs, list) or "text" in outputs)
+        )
+        found[model_id] = {
+            "name": "" if name == model_id else name,
+            "context": context,
+            "price_free": price_free,
+            "chat": chat,
+        }
+    return dict(sorted(found.items()))
+
+
+def _discovery_error(status: int, body: str) -> str:
+    if status in (401, 403):
+        return "The API key was rejected."
+    if status == 404:
+        return "This provider does not publish a model list. Add models by their ID instead."
+    return f"The provider answered {status}: {_error_message(body)}"
+
+
 def _seconds_until_hour_utc(hour: int) -> float:
     now = datetime.now(timezone.utc)
     target = now.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
@@ -286,7 +400,8 @@ class AIEngine:
         self._slots: dict[tuple[str, str, int], SlotState] = {}
         self._key_blocks: dict[tuple[str, int], SlotState] = {}
         self._stats: dict[str, ModelStats] = {}
-        self._discovered: dict[str, tuple[float, list[str] | None]] = {}
+        self._discovered: dict[str, Discovery] = {}
+        self._free_only = True
 
         self._env_mtime = self._mtime(ENV_FILE)
         self._env_keys = {k for k, v in dotenv_values(ENV_FILE).items() if v}
@@ -329,8 +444,16 @@ class AIEngine:
             self._config_mtime = mtime
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                providers = {
-                    pid: Provider(
+                providers = {}
+                for pid, raw in data["providers"].items():
+                    # A known provider only has to state what differs from its preset.
+                    preset = {} if raw.get("custom") else PRESETS.get(raw.get("preset", pid), {})
+                    spec = {**preset, **raw}
+                    free = spec.get("free", "auto")
+                    if free not in ("all", "none", "auto"):
+                        raise ValueError(f"provider '{pid}': free must be all, none or auto")
+                    re.compile(spec.get("free_pattern", ""))
+                    providers[pid] = Provider(
                         id=pid,
                         name=spec.get("name", pid),
                         base_url=spec["base_url"],
@@ -340,33 +463,96 @@ class AIEngine:
                         headers=dict(spec.get("headers", {})),
                         signup_url=spec.get("signup_url", ""),
                         free_tier=spec.get("free_tier", ""),
+                        free=free,
+                        free_pattern=spec.get("free_pattern", ""),
+                        requires_key=bool(spec.get("requires_key", True)),
+                        local=bool(spec.get("local", False)),
+                        custom=bool(spec.get("custom", False)),
+                        models_url=spec.get("models_url", ""),
+                        models_id_field=spec.get("models_id_field", "id"),
+                        fields=[dict(f) for f in spec.get("fields", [])],
                     )
-                    for pid, spec in data["providers"].items()
-                }
-                chain = []
+                chain, seen = [], set()
                 for item in data["chain"]:
                     if item["provider"] not in providers:
                         raise ValueError(f"chain uses unknown provider '{item['provider']}'")
-                    chain.append(
-                        ModelEntry(
-                            provider=item["provider"],
-                            model=item["model"],
-                            label=item.get("label", item["model"]),
-                            tier=item.get("tier", "strong"),
-                            enabled=bool(item.get("enabled", True)),
-                            max_input_chars=item.get("max_input_chars"),
-                        )
+                    entry = ModelEntry(
+                        provider=item["provider"],
+                        model=item["model"],
+                        label=item.get("label", item["model"]),
+                        tier=item.get("tier", ""),
+                        enabled=bool(item.get("enabled", True)),
+                        max_input_chars=item.get("max_input_chars"),
+                        free=item.get("free") if isinstance(item.get("free"), bool) else None,
                     )
-            except (ValueError, KeyError, TypeError) as exc:
+                    if entry.id not in seen:
+                        seen.add(entry.id)
+                        chain.append(entry)
+                free_only = bool(data.get("settings", {}).get("free_only", True))
+            except (ValueError, KeyError, TypeError, AttributeError, re.error) as exc:
                 # Keep serving with the last good configuration.
                 self._config_error = f"{path.name}: {exc}"
                 log.error("could not load %s: %s", path.name, exc)
                 return
             self._providers, self._chain, self._config_error = providers, chain, ""
+            self._free_only = free_only
             log.info("AI chain loaded: %d models across %d providers", len(chain), len(providers))
 
-    def _find(self, model_id: str | None) -> ModelEntry | None:
-        return next((e for e in self._chain if e.id == model_id), None) if model_id else None
+    def reload(self) -> None:
+        """Re-read the configuration and .env now (after Settings changed them)."""
+        with self._lock:
+            self._config_mtime = 0.0
+            self._env_mtime = -1.0
+        self._load()
+
+    def forget(self, provider_id: str) -> None:
+        """Drop what was learned about a provider whose key or URL just changed."""
+        with self._lock:
+            self._discovered.pop(provider_id, None)
+            for key in [k for k in self._key_blocks if k[0] == provider_id]:
+                del self._key_blocks[key]
+            for key in [k for k in self._slots if k[0] == provider_id]:
+                del self._slots[key]
+
+    def _info(self, entry: ModelEntry) -> dict | None:
+        models = self._discovered.get(entry.provider, Discovery()).models
+        return models.get(entry.model) if models else None
+
+    def _is_free(self, entry: ModelEntry) -> bool | None:
+        if entry.free is not None:
+            return entry.free
+        return self._providers[entry.provider].is_free(entry.model, self._info(entry))
+
+    def _blocked_as_paid(self, entry: ModelEntry) -> bool:
+        return self._free_only and self._is_free(entry) is False
+
+    def _find(self, model_id: str | None, chain: list[ModelEntry] | None = None) -> ModelEntry | None:
+        source = self._chain if chain is None else chain
+        return next((e for e in source if e.id == model_id), None) if model_id else None
+
+    def build_chain(self, items: list[dict]) -> list[ModelEntry]:
+        """A user's own model list as chain entries; models of removed providers are dropped."""
+        self._load()
+        chain, seen = [], set()
+        for item in items:
+            entry = ModelEntry(
+                provider=str(item.get("provider", "")),
+                model=str(item.get("model", "")),
+                label=str(item.get("label") or item.get("model", "")),
+                enabled=bool(item.get("enabled", True)),
+            )
+            if entry.provider in self._providers and entry.model and entry.id not in seen:
+                seen.add(entry.id)
+                chain.append(entry)
+        return chain
+
+    def default_items(self) -> list[dict]:
+        """The default model list in the shape a personal list is stored in."""
+        self._load()
+        return [
+            {"provider": e.provider, "model": e.model, "label": e.label, **({} if e.enabled else {"enabled": False})}
+            for e in self._chain
+        ]
 
     # ── slot state ───────────────────────────────────────────────────
     def _slot(self, entry: ModelEntry, key_index: int) -> SlotState:
@@ -381,11 +567,13 @@ class AIEngine:
         worst = max(candidates, key=lambda s: s.cooldown_until)
         return worst.cooldown_until, worst.reason
 
-    def _candidates(self, prefer: str | None) -> Iterator[tuple[ModelEntry, Provider, int, str, bool]]:
+    def _candidates(self, prefer: str | None,
+                    source: list[ModelEntry] | None = None) -> Iterator[tuple[ModelEntry, Provider, int, str, bool]]:
         """Yield (entry, provider, key_index, key, is_first_choice) for usable slots."""
-        chain = [e for e in self._chain if e.enabled]
-        preferred = self._find(prefer)
-        if preferred and preferred.enabled:
+        source = [e for e in (self._chain if source is None else source) if e.provider in self._providers]
+        chain = [e for e in source if e.enabled and not self._blocked_as_paid(e)]
+        preferred = self._find(prefer, source)
+        if preferred in chain:
             chain = [preferred] + [e for e in chain if e is not preferred]
         top = next((e for e in chain if self._providers[e.provider].ready()), None)
         for entry in chain:
@@ -467,7 +655,9 @@ class AIEngine:
             "temperature": temperature,
             "stream": stream,
         }
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", **provider.headers}
+        headers = {"Content-Type": "application/json", **provider.headers}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         return f"{provider.url()}/chat/completions", headers, payload
 
     def _call(self, entry: ModelEntry, provider: Provider, key: str, messages: list[Message],
@@ -519,10 +709,10 @@ class AIEngine:
 
     # ── public API ───────────────────────────────────────────────────
     def complete(self, messages: list[Message], *, temperature: float = 0.7,
-                 prefer: str | None = None) -> AIResult:
-        """Return one full answer from the best model that is currently available."""
+                 prefer: str | None = None, chain: list[ModelEntry] | None = None) -> AIResult:
+        """Return one full answer from the best available model of the given list (default: the shared one)."""
         self._load()
-        for entry, provider, index, key, is_top in self._candidates(prefer):
+        for entry, provider, index, key, is_top in self._candidates(prefer, chain):
             started = time.time()
             try:
                 text = self._call(entry, provider, key, messages, temperature)
@@ -532,17 +722,17 @@ class AIEngine:
             latency = int((time.time() - started) * 1000)
             self._record_success(entry, index, latency)
             return AIResult(text, entry.provider, entry.model, entry.label, not is_top, latency)
-        raise self._unavailable()
+        raise self._unavailable(chain)
 
     def stream(self, messages: list[Message], *, temperature: float = 0.7,
-               prefer: str | None = None) -> Iterator[AIResult | str]:
+               prefer: str | None = None, chain: list[ModelEntry] | None = None) -> Iterator[AIResult | str]:
         """Yield an AIResult header (text empty) once a model starts answering, then text chunks.
 
         Falling back is only possible before the first chunk; after that a
         failure raises AIInterrupted and the caller keeps what it received.
         """
         self._load()
-        for entry, provider, index, key, is_top in self._candidates(prefer):
+        for entry, provider, index, key, is_top in self._candidates(prefer, chain):
             started = time.time()
             chunks = self._stream_call(entry, provider, key, messages, temperature)
             try:
@@ -563,17 +753,17 @@ class AIEngine:
             finally:
                 chunks.close()
             return
-        raise self._unavailable()
+        raise self._unavailable(chain)
 
-    def test(self, model_id: str) -> dict:
+    def test(self, model_id: str, chain: list[ModelEntry] | None = None) -> dict:
         """Send a one-word prompt to a single model, ignoring its cooldown."""
         self._load()
-        entry = self._find(model_id)
-        if entry is None:
+        entry = self._find(model_id, chain)
+        if entry is None or entry.provider not in self._providers:
             return {"ok": False, "error": "Unknown model."}
         provider = self._providers[entry.provider]
         if not provider.ready():
-            return {"ok": False, "error": f"No API key set ({provider.key_env})."}
+            return {"ok": False, "error": f"{provider.name} is not set up yet."}
         messages = [{"role": "user", "content": "Reply with the single word: ready"}]
         last_error = ""
         for index, key in enumerate(provider.keys()):
@@ -592,16 +782,25 @@ class AIEngine:
         return {"ok": False, "error": last_error}
 
     # ── status ───────────────────────────────────────────────────────
-    def _unavailable(self) -> AIUnavailable:
+    def _unavailable(self, source: list[ModelEntry] | None = None) -> AIUnavailable:
+        chain = [e for e in (self._chain if source is None else source) if e.provider in self._providers]
         if self._config_error and not self._chain:
             return AIUnavailable(f"The AI configuration could not be loaded ({self._config_error}).")
         if not any(p.ready() for p in self._providers.values()):
             return AIUnavailable(
-                "No AI provider is configured yet. Add at least one API key to backend/.env "
-                "(see .env.example) and try again."
+                "No AI provider is set up yet. Add a provider and its API key in "
+                "Settings > AI models, then try again."
+            )
+        usable = [e for e in chain if e.enabled and self._providers[e.provider].ready()]
+        if not usable:
+            return AIUnavailable("No AI model is selected. Choose the models to use in Settings > AI models.")
+        if all(self._blocked_as_paid(e) for e in usable):
+            return AIUnavailable(
+                "Free-only mode is on and every selected model is a paid one. Add a free model "
+                "or turn free-only off in Settings > AI models."
             )
         soonest = min(
-            (until for entry in self._chain if entry.enabled
+            (until for entry in chain if entry.enabled
              for until in [self._model_cooldown(entry)[0]] if until),
             default=0.0,
         )
@@ -622,33 +821,35 @@ class AIEngine:
             return 0.0, ""
         return min(blocks, key=lambda b: b[0])
 
-    def discover(self, force: bool = False) -> None:
-        """Ask each configured provider which model ids it currently serves."""
+    def discover(self, force: bool = False, only: str | None = None) -> None:
+        """Fetch each ready provider's model list (cached for DISCOVERY_TTL)."""
         self._load()
 
         def fetch(provider: Provider) -> None:
-            listed: list[str] | None = None
+            found = Discovery(at=time.time())
             try:
-                response = self._http.get(
-                    f"{provider.url()}/models",
-                    headers={"Authorization": f"Bearer {provider.keys()[0]}", **provider.headers},
-                    timeout=10.0,
-                )
+                key = provider.keys()[0]
+                headers = {**provider.headers, **({"Authorization": f"Bearer {key}"} if key else {})}
+                response = self._http.get(provider.models_endpoint(), headers=headers, timeout=10.0)
                 if response.status_code == 200:
-                    body = response.json()
-                    items = body.get("data", body) if isinstance(body, dict) else body
-                    listed = sorted(
-                        str(item.get("id", "")).removeprefix("models/")
-                        for item in items if isinstance(item, dict) and item.get("id")
-                    )
-            except (httpx.HTTPError, ValueError, AttributeError, TypeError):
-                listed = None
+                    found.models = _parse_models(response.json(), provider.models_id_field)
+                else:
+                    found.error = _discovery_error(response.status_code, response.text)
+            except httpx.HTTPError:
+                found.error = (
+                    f"Could not connect. Is {provider.name} running on this computer?"
+                    if provider.local else "Could not reach the provider."
+                )
+            except (ValueError, AttributeError, TypeError, IndexError):
+                found.error = "The provider's model list could not be read."
             with self._lock:
-                self._discovered[provider.id] = (time.time(), listed)
+                self._discovered[provider.id] = found
 
         threads = []
         for provider in self._providers.values():
-            cached_at = self._discovered.get(provider.id, (0.0, None))[0]
+            if only is not None and provider.id != only:
+                continue
+            cached_at = self._discovered.get(provider.id, Discovery()).at
             if provider.ready() and (force or time.time() - cached_at > DISCOVERY_TTL):
                 thread = threading.Thread(target=fetch, args=(provider,), daemon=True)
                 thread.start()
@@ -656,20 +857,67 @@ class AIEngine:
         for thread in threads:
             thread.join(timeout=12)
 
-    def status(self) -> dict:
+    def has_provider(self, provider_id: str) -> bool:
+        self._load()
+        return provider_id in self._providers
+
+    def provider_models(self, provider_id: str, refresh: bool = False,
+                        chain: list[ModelEntry] | None = None) -> dict:
+        """Every chat model a provider offers, flagged free / added, for the model picker."""
+        self.discover(force=refresh, only=provider_id)
+        with self._lock:
+            provider = self._providers[provider_id]
+            found = self._discovered.get(provider_id, Discovery())
+            added = {e.model for e in (self._chain if chain is None else chain) if e.provider == provider_id}
+            models = [
+                {
+                    "id": model_id,
+                    "name": info["name"],
+                    "context": info["context"],
+                    "free": provider.is_free(model_id, info),
+                    "added": model_id in added,
+                }
+                for model_id, info in (found.models or {}).items()
+                if info["chat"] or model_id in added
+            ]
+        return {
+            "provider": provider_id,
+            "models": models,
+            "error": found.error if provider.ready() else "",
+            "fetched_at": _iso(found.at),
+        }
+
+    def is_ready(self, provider_id: str) -> bool:
+        self._load()
+        provider = self._providers.get(provider_id)
+        return provider is not None and provider.ready()
+
+    def describe(self, provider_id: str, model: str) -> dict:
+        """What the provider's own list says about one model (empty if unknown)."""
+        with self._lock:
+            models = self._discovered.get(provider_id, Discovery()).models or {}
+            return dict(models.get(model) or {})
+
+    def status(self, admin: bool = False, source: list[ModelEntry] | None = None) -> dict:
+        """Live state of a user's own list, or of the shared default list when none is given."""
         self._load()
         now = time.time()
         chain, active = [], None
+        personal = source is not None
         with self._lock:
-            for position, entry in enumerate(self._chain, start=1):
+            source = [e for e in (self._chain if source is None else source) if e.provider in self._providers]
+            for position, entry in enumerate(source, start=1):
                 provider = self._providers[entry.provider]
                 stats = self._stats.get(entry.id, ModelStats())
-                listed_models = self._discovered.get(provider.id, (0.0, None))[1]
+                listed_models = self._discovered.get(provider.id, Discovery()).models
+                info = self._info(entry) or {}
                 until, reason = (0.0, "")
                 if not entry.enabled:
                     state = "disabled"
                 elif not provider.ready():
                     state = "no_key"
+                elif self._blocked_as_paid(entry):
+                    state = "blocked"
                 else:
                     until, reason = self._model_cooldown(entry)
                     state = "cooldown" if until else "ready"
@@ -683,6 +931,8 @@ class AIEngine:
                     "model": entry.model,
                     "label": entry.label,
                     "tier": entry.tier,
+                    "free": self._is_free(entry),
+                    "context": info.get("context"),
                     "state": state,
                     "reason": reason,
                     "cooldown_until": _iso(until),
@@ -695,23 +945,42 @@ class AIEngine:
                     "last_error": stats.last_error,
                     "last_error_at": _iso(stats.last_error_at),
                 })
-            providers = [
-                {
+            providers = []
+            for p in self._providers.values():
+                found = self._discovered.get(p.id, Discovery())
+                keys = p.real_keys()
+                providers.append({
                     "id": p.id,
                     "name": p.name,
-                    "key_env": p.key_env,
+                    "custom": p.custom,
+                    "local": p.local,
+                    "requires_key": p.requires_key,
+                    "base_url": p.base_url if admin else "",
+                    "key_env": p.key_env if admin else "",
                     "configured": p.ready(),
-                    "key_count": len(p.keys()),
+                    "key_count": len(keys),
+                    # Enough to recognise a key, never enough to use it.
+                    "key_hint": keys[0][-4:] if admin and keys and len(keys[0]) >= 16 else "",
+                    "fields": [
+                        {"env": f["env"], "label": f.get("label", f["env"]), "set": bool(os.getenv(f["env"], "").strip())}
+                        for f in p.fields
+                    ],
                     "signup_url": p.signup_url,
                     "free_tier": p.free_tier,
-                    "available_models": self._discovered.get(p.id, (0.0, None))[1],
-                }
-                for p in self._providers.values()
-            ]
+                    "free": "some" if p.free == "auto" and p.free_pattern else p.free,
+                    "model_count": (
+                        None if found.models is None else sum(1 for m in found.models.values() if m["chat"])
+                    ),
+                    "added_count": sum(1 for e in source if e.provider == p.id),
+                    "error": found.error if p.ready() else "",
+                })
         return {
             "active": active,
             "chain": chain,
             "providers": providers,
+            "free_only": self._free_only,
+            "can_manage": admin,
+            "personal": personal,
             "config_error": self._config_error,
             "config_file": settings.ai_models_file.name,
         }

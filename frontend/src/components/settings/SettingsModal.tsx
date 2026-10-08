@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
 import { useAuth, useUser } from "../../context/AuthContext";
 import { useApp } from "../../context/AppContext";
@@ -7,18 +7,20 @@ import { THEMES, useTheme } from "../../context/ThemeContext";
 import type { Theme } from "../../context/ThemeContext";
 import { useUI } from "../../context/UIContext";
 import { api } from "../../lib/api";
-import { formatWait, plural } from "../../lib/format";
-import type { AIProvider, ChainModel, User } from "../../lib/types";
+import type { User } from "../../lib/types";
 import { Button } from "../ui/Button";
 import Icon from "../ui/Icon";
 import type { IconName } from "../ui/Icon";
 import Modal from "../ui/Modal";
+import AdminTab from "./AdminTab";
+import AIModelsTab from "./AIModelsTab";
 import "./settings.css";
 
-const TABS: { id: SettingsTab; label: string; icon: IconName }[] = [
+const TABS: { id: SettingsTab; label: string; icon: IconName; adminOnly?: boolean }[] = [
   { id: "profile", label: "Profile", icon: "user" },
   { id: "appearance", label: "Appearance", icon: "theme" },
   { id: "ai", label: "AI models", icon: "cpu" },
+  { id: "admin", label: "Admin", icon: "shield", adminOnly: true },
   { id: "shortcuts", label: "Shortcuts", icon: "bolt" },
 ];
 
@@ -37,6 +39,8 @@ function ProfileTab() {
   const profileChanged = username.trim() !== user.username || goal !== user.daily_goal_minutes;
   const passwordError =
     next && next.length < 6 ? "Use at least 6 characters." : confirm && next !== confirm ? "The passwords don't match." : "";
+
+  const builtin = user.builtin_admin;
 
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault();
@@ -69,7 +73,7 @@ function ProfileTab() {
         <h3>Profile</h3>
         <label className="field">
           <span className="label">Username</span>
-          <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} minLength={3} maxLength={32} required />
+          <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} minLength={3} maxLength={32} required disabled={builtin} />
         </label>
         <label className="field">
           <span className="label">Daily focus goal</span>
@@ -83,7 +87,14 @@ function ProfileTab() {
         <div><Button variant="primary" type="submit" loading={saving === "profile"} disabled={!profileChanged}>Save changes</Button></div>
       </form>
 
-      <form className="set-section" onSubmit={savePassword}>
+      {user.is_admin && (
+        <p className="notice accent">
+          <Icon name="shield" size={16} />
+          <span>You are an administrator. Manage accounts under <b>Admin</b> and providers under <b>AI models</b>.{builtin && <> This account's username and password are set in <code>backend/.env</code>.</>}</span>
+        </p>
+      )}
+
+      {!builtin && <form className="set-section" onSubmit={savePassword}>
         <h3>Password</h3>
         <label className="field">
           <span className="label">Current password</span>
@@ -105,7 +116,7 @@ function ProfileTab() {
             Change password
           </Button>
         </div>
-      </form>
+      </form>}
 
       <div className="set-section">
         <h3>Session</h3>
@@ -164,155 +175,6 @@ function AppearanceTab() {
   );
 }
 
-// ─── AI models ────────────────────────────────────────────────
-type TestResult = { ok: boolean; latency_ms?: number; error?: string } | "running";
-
-function StateBadge({ model }: { model: ChainModel }) {
-  if (model.state === "ready") return <span className="badge success"><Icon name="dotFilled" size={10} />Ready</span>;
-  if (model.state === "cooldown") {
-    return (
-      <span className="badge warning" title={model.last_error}>
-        <Icon name="clock" size={12} />
-        {model.reason || "Cooling down"} · back in {formatWait(model.cooldown_seconds)}
-      </span>
-    );
-  }
-  if (model.state === "no_key") return <span className="badge"><Icon name="key" size={12} />No API key</span>;
-  return <span className="badge">Disabled</span>;
-}
-
-function ProviderCard({ provider }: { provider: AIProvider }) {
-  return (
-    <div className="provider">
-      <div className="provider-head">
-        <b>{provider.name}</b>
-        {provider.configured
-          ? <span className="badge success"><Icon name="check" size={12} />{plural(provider.key_count, "key")}</span>
-          : <span className="badge">Not set up</span>}
-        {provider.signup_url && (
-          <a className="provider-link" href={provider.signup_url} target="_blank" rel="noopener noreferrer">
-            Get a key <Icon name="external" size={13} />
-          </a>
-        )}
-      </div>
-      {provider.free_tier && <p>{provider.free_tier}</p>}
-      {!provider.configured && <p>Add <code>{provider.key_env}=your_key</code> to <code>backend/.env</code> to enable it.</p>}
-      {provider.available_models && (
-        <details>
-          <summary>{provider.available_models.length} models offered by this provider right now</summary>
-          <div className="provider-models">{provider.available_models.map((m) => <code key={m}>{m}</code>)}</div>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function AITab() {
-  const { ai, refreshAI } = useApp();
-  const [tests, setTests] = useState<Record<string, TestResult>>({});
-  const [refreshing, setRefreshing] = useState(false);
-
-  // Cooldowns tick down, so keep the list fresh while this tab is open.
-  useEffect(() => {
-    void refreshAI();
-    const timer = window.setInterval(() => void refreshAI(), 8000);
-    return () => window.clearInterval(timer);
-  }, [refreshAI]);
-
-  const test = async (id: string) => {
-    setTests((t) => ({ ...t, [id]: "running" }));
-    try {
-      const result = await api.post<{ ok: boolean; latency_ms?: number; error?: string }>("/api/ai/test", { id });
-      setTests((t) => ({ ...t, [id]: result }));
-    } catch (error) {
-      setTests((t) => ({ ...t, [id]: { ok: false, error: error instanceof Error ? error.message : "Test failed" } }));
-    }
-    void refreshAI();
-  };
-
-  const rediscover = async () => {
-    setRefreshing(true);
-    await refreshAI(true);
-    setRefreshing(false);
-  };
-
-  if (!ai) return <p className="hint">Loading the AI engine status…</p>;
-
-  const active = ai.chain.find((m) => m.id === ai.active);
-  const configured = ai.providers.filter((p) => p.configured).length;
-
-  return (
-    <>
-      <div className="set-section">
-        <div className="set-head">
-          <h3>Fallback chain</h3>
-          <Button size="sm" variant="ghost" icon="refresh" loading={refreshing} onClick={rediscover}>Refresh</Button>
-        </div>
-        <p className="hint">
-          Every request tries these models from the top. When one hits its rate limit it cools down and the next takes over;
-          as soon as it recovers, Zyqra goes back to it automatically.
-        </p>
-
-        {ai.config_error && <p className="notice danger"><Icon name="alertTriangle" size={16} />{ai.config_error}</p>}
-        {configured === 0 ? (
-          <p className="notice warning">
-            <Icon name="key" size={16} />
-            <span>No AI provider is set up yet. Add at least one API key to <code>backend/.env</code> (see <code>.env.example</code>) — it is picked up without a restart.</span>
-          </p>
-        ) : active ? (
-          <p className="notice accent"><Icon name="sparkles" size={16} /><span>Answering now: <b>{active.label}</b> ({active.provider_name})</span></p>
-        ) : (
-          <p className="notice warning"><Icon name="clock" size={16} />Every configured model is cooling down. Requests resume as soon as one recovers.</p>
-        )}
-
-        <ol className="chain">
-          {ai.chain.map((model) => {
-            const result = tests[model.id];
-            return (
-              <li key={model.id} className={`chain-row ${model.id === ai.active ? "active" : ""} ${model.state === "no_key" || model.state === "disabled" ? "off" : ""}`}>
-                <span className="chain-pos">{model.position}</span>
-                <div className="chain-main">
-                  <div className="chain-title">
-                    <b>{model.label}</b>
-                    <span className={`tier tier-${model.tier}`}>{model.tier}</span>
-                    {model.listed === false && (
-                      <span className="badge danger" title="This model id is not in the provider's current model list. Check the id in ai_models.json.">
-                        <Icon name="alertTriangle" size={12} />Not listed by provider
-                      </span>
-                    )}
-                  </div>
-                  <code>{model.provider_name} · {model.model}</code>
-                  <div className="chain-meta">
-                    <StateBadge model={model} />
-                    {(model.ok > 0 || model.failed > 0) && <span>{model.ok} answered · {model.failed} failed</span>}
-                    {result && result !== "running" && (
-                      result.ok
-                        ? <span className="ok"><Icon name="checkCircle" size={13} />Works · {result.latency_ms} ms</span>
-                        : <span className="bad" title={result.error}><Icon name="closeCircle" size={13} />{result.error}</span>
-                    )}
-                  </div>
-                </div>
-                {model.state !== "no_key" && model.state !== "disabled" && (
-                  <Button size="sm" variant="secondary" loading={result === "running"} onClick={() => test(model.id)}>Test</Button>
-                )}
-              </li>
-            );
-          })}
-        </ol>
-        <p className="hint">
-          To add, remove or reorder models, edit <code>backend/{ai.config_file}</code>. Changes apply immediately.
-        </p>
-      </div>
-
-      <div className="set-section">
-        <h3>Providers</h3>
-        <p className="hint">Each provider you add a key for gives the chain more free quota to fall back on.</p>
-        {ai.providers.map((p) => <ProviderCard key={p.id} provider={p} />)}
-      </div>
-    </>
-  );
-}
-
 // ─── Shortcuts ────────────────────────────────────────────────
 const SHORTCUTS: { keys: string[]; action: string }[] = [
   { keys: ["Ctrl", "K"], action: "Search everything / run a command" },
@@ -345,12 +207,13 @@ function ShortcutsTab() {
 // ─── Modal ────────────────────────────────────────────────────
 export default function SettingsModal() {
   const { settingsTab, openSettings, closeSettings, meta } = useApp();
+  const user = useUser();
   if (!settingsTab) return null;
   return (
     <Modal title="Settings" size="xwide" onClose={closeSettings} bare>
       <div className="settings">
         <nav className="settings-tabs" aria-label="Settings sections">
-          {TABS.map((tab) => (
+          {TABS.filter((tab) => !tab.adminOnly || user.is_admin).map((tab) => (
             <button key={tab.id} type="button" className={`nav-item ${settingsTab === tab.id ? "on" : ""}`} onClick={() => openSettings(tab.id)}>
               <Icon name={tab.icon} size={18} />
               <span>{tab.label}</span>
@@ -361,7 +224,8 @@ export default function SettingsModal() {
         <div className="settings-body">
           {settingsTab === "profile" && <ProfileTab />}
           {settingsTab === "appearance" && <AppearanceTab />}
-          {settingsTab === "ai" && <AITab />}
+          {settingsTab === "ai" && <AIModelsTab />}
+          {settingsTab === "admin" && user.is_admin && <AdminTab />}
           {settingsTab === "shortcuts" && <ShortcutsTab />}
         </div>
       </div>

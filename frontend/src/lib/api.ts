@@ -64,7 +64,8 @@ export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {}),
   patch: <T>(path: string, body: unknown) => request<T>("PATCH", path, body),
-  delete: (path: string) => request<void>("DELETE", path),
+  put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
+  delete: <T = void>(path: string) => request<T>("DELETE", path),
 
   /** POST and read the reply as server-sent events, calling `onEvent` for each one. */
   async stream(path: string, body: unknown, onEvent: (event: StreamEvent) => void, signal?: AbortSignal) {

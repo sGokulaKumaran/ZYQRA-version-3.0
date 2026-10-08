@@ -5,6 +5,9 @@ export interface User {
   username: string;
   daily_goal_minutes: number;
   created_at: string | null;
+  is_admin: boolean;
+  /** The administrator defined in backend/.env; its name and password are set there. */
+  builtin_admin: boolean;
 }
 
 export interface AuthSession {
@@ -184,7 +187,11 @@ export interface DashboardData {
 }
 
 // ── AI engine ───────────────────────────────────────────────
-export type ModelState = "ready" | "cooldown" | "no_key" | "disabled";
+/** `blocked`: a paid model held back by free-only mode. */
+export type ModelState = "ready" | "cooldown" | "no_key" | "disabled" | "blocked";
+
+/** true = free tier, false = billed, null = the provider doesn't say. */
+export type Free = boolean | null;
 
 export interface ChainModel {
   id: string;
@@ -194,6 +201,8 @@ export interface ChainModel {
   model: string;
   label: string;
   tier: string;
+  free: Free;
+  context: number | null;
   state: ModelState;
   reason: string;
   cooldown_until: string | null;
@@ -207,23 +216,76 @@ export interface ChainModel {
   last_error_at: string | null;
 }
 
+/** How a provider's models are priced: every one free, none, some, or decided per model. */
+export type FreeRule = "all" | "none" | "some" | "auto";
+
+export interface ProviderField {
+  env: string;
+  label: string;
+  set?: boolean;
+}
+
 export interface AIProvider {
   id: string;
   name: string;
+  custom: boolean;
+  local: boolean;
+  requires_key: boolean;
+  base_url: string;
   key_env: string;
   configured: boolean;
   key_count: number;
+  /** Last characters of the stored key (administrators only). */
+  key_hint: string;
+  fields: ProviderField[];
   signup_url: string;
   free_tier: string;
-  available_models: string[] | null;
+  free: FreeRule;
+  /** Chat models the provider offers; null until its list has been fetched. */
+  model_count: number | null;
+  added_count: number;
+  error: string;
 }
 
 export interface AIStatus {
   active: string | null;
   chain: ChainModel[];
   providers: AIProvider[];
+  free_only: boolean;
+  /** The viewer is an administrator: may connect providers and edit the default list. */
+  can_manage: boolean;
+  /** `chain` is the viewer's own list rather than the default one. */
+  personal: boolean;
   config_error: string;
   config_file: string;
+}
+
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  base_url: string;
+  signup_url: string;
+  free_tier: string;
+  free: FreeRule;
+  local: boolean;
+  requires_key: boolean;
+  fields: ProviderField[];
+  added: boolean;
+}
+
+export interface OfferedModel {
+  id: string;
+  name: string;
+  context: number | null;
+  free: Free;
+  added: boolean;
+}
+
+export interface ProviderModels {
+  provider: string;
+  models: OfferedModel[];
+  error: string;
+  fetched_at: string | null;
 }
 
 export interface SearchResult {
@@ -231,4 +293,27 @@ export interface SearchResult {
   id: number;
   title: string;
   snippet: string;
+}
+
+// ── Admin ───────────────────────────────────────────────────
+export interface AdminUser {
+  id: number;
+  username: string;
+  is_admin: boolean;
+  /** The account defined in backend/.env; it can't be changed from the app. */
+  builtin: boolean;
+  own_models: boolean;
+  created_at: string | null;
+  last_active_at: string | null;
+  chats: number;
+  quizzes: number;
+  notes: number;
+  decks: number;
+  focus_minutes: number;
+}
+
+export interface AdminOverview {
+  registration_open: boolean;
+  totals: { users: number; admins: number; chats: number; messages: number; quizzes: number; notes: number; decks: number };
+  users: AdminUser[];
 }

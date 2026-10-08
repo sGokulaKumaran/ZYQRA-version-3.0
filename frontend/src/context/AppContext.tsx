@@ -17,7 +17,7 @@ export const ROUTES: { id: Route; label: string; icon: IconName }[] = [
   { id: "planner", label: "Planner", icon: "planner" },
 ];
 
-export type SettingsTab = "profile" | "appearance" | "ai" | "shortcuts";
+export type SettingsTab = "profile" | "appearance" | "ai" | "admin" | "shortcuts";
 
 /** A one-shot instruction handed to the page being navigated to. */
 export interface Intent {
@@ -42,6 +42,8 @@ interface AppContextValue {
   meta: Meta | null;
   ai: AIStatus | null;
   refreshAI: (rediscover?: boolean) => Promise<void>;
+  /** Adopt a status the server just returned from a settings change. */
+  applyAI: (status: AIStatus) => void;
   /** Which settings tab is open, or null when settings are closed. */
   settingsTab: SettingsTab | null;
   openSettings: (tab?: SettingsTab) => void;
@@ -101,7 +103,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const closeSettings = useCallback(() => setSettingsTab(null), []);
 
   const value = useMemo(
-    () => ({ route, intent, navigate, takeIntent, meta, ai, refreshAI, settingsTab, openSettings, closeSettings }),
+    () => ({ route, intent, navigate, takeIntent, meta, ai, refreshAI, applyAI: setAI, settingsTab, openSettings, closeSettings }),
     [route, intent, navigate, takeIntent, meta, ai, refreshAI, settingsTab, openSettings, closeSettings],
   );
 

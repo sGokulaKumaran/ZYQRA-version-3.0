@@ -11,6 +11,7 @@ from .. import models
 from ..ai import engine, prompts
 from ..ai.parsing import extract_json_array
 from ..common import iso, owned, resolve_source
+from ..ai.personal import complete_for
 from ..database import get_db
 from ..security import get_current_user
 
@@ -113,7 +114,7 @@ def generate(body: GenerateRequest, user: models.User = Depends(get_current_user
         raise HTTPException(status_code=422, detail="Enter a topic or choose a note to build the quiz from.")
     topic = topic or "the study material provided"
 
-    result = engine.complete(
+    result = complete_for(user, 
         [{"role": "user", "content": prompts.quiz(topic, body.count, body.difficulty, source)}],
         temperature=0.6,
     )

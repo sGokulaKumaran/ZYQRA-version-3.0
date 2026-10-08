@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-ENV_FILE = BACKEND_DIR / ".env"
+ENV_FILE = Path(os.getenv("ZYQRA_ENV_FILE", str(BACKEND_DIR / ".env")))
 
 load_dotenv(ENV_FILE)
 

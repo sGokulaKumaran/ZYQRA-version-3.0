@@ -11,6 +11,7 @@ from .. import models
 from ..ai import engine, prompts
 from ..ai.parsing import extract_json_array
 from ..common import iso, owned
+from ..ai.personal import complete_for
 from ..database import get_db
 from ..models import utcnow
 from ..security import get_current_user
@@ -140,7 +141,7 @@ def draft_plan(body: PlanRequest, user: models.User = Depends(get_current_user))
     days = (body.deadline - body.start).days + 1
     max_tasks = max(3, min(MAX_PLAN_TASKS, days * 2))
 
-    result = engine.complete(
+    result = complete_for(user, 
         [{"role": "user", "content": prompts.study_plan(
             body.goal.strip(), body.start.isoformat(), body.deadline.isoformat(), body.hours_per_day, max_tasks
         )}],

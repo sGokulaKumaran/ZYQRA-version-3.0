@@ -163,6 +163,18 @@ table { border-collapse: collapse; }
 .seg button:hover { color: var(--text); }
 .seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
 
+.switch {
+  position: relative; width: 36px; height: 20px; flex-shrink: 0; border-radius: 999px;
+  background: var(--border-strong); transition: background 0.15s;
+}
+.switch i {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--surface); box-shadow: var(--shadow-sm); transition: transform 0.15s var(--ease);
+}
+.switch.on { background: var(--accent); }
+.switch.on i { transform: translateX(16px); background: var(--on-accent); }
+.switch:disabled { opacity: 0.5; }
+
 .kbd {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 20px; height: 20px; padding: 0 5px;

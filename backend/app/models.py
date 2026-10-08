@@ -22,6 +22,9 @@ class User(Base):
     password = Column(String)
     daily_goal_minutes = Column(Integer, default=60)
     created_at = Column(DateTime, default=utcnow)
+    is_admin = Column(Boolean, default=False)
+    # JSON list of the models this user chose for themselves; NULL = the default list.
+    ai_models = Column(Text)
 
     chats = relationship("Chat", back_populates="owner", cascade="all, delete")
     quiz_sessions = relationship("QuizSession", back_populates="owner", cascade="all, delete")
@@ -191,3 +194,13 @@ class FocusSession(Base):
     created_at = Column(DateTime, default=utcnow)
 
     owner = relationship("User", back_populates="focus_sessions")
+
+
+# ─── App settings ──────────────────────────────────────────────────────
+class Setting(Base):
+    """Installation-wide switches an administrator can change."""
+
+    __tablename__ = "settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(String, default="")

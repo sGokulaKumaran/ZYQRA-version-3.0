@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import Logo from "../../components/layout/Logo";
 import { Button, IconButton } from "../../components/ui/Button";
 import Icon from "../../components/ui/Icon";
 import type { IconName } from "../../components/ui/Icon";
 import { useAuth } from "../../context/AuthContext";
-import { errorMessage } from "../../lib/api";
+import { api, errorMessage } from "../../lib/api";
 import "./auth.css";
 
 const FEATURES: { icon: IconName; title: string; text: string }[] = [
@@ -23,6 +23,14 @@ export default function AuthPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const [signupsOpen, setSignupsOpen] = useState(true);
+
+  useEffect(() => {
+    api.get<{ registration_open: boolean }>("/api/auth/config")
+      .then((config) => setSignupsOpen(config.registration_open))
+      .catch(() => {});
+  }, []);
 
   const isLogin = mode === "login";
 
@@ -118,10 +126,10 @@ export default function AuthPage() {
             {isLogin ? "Sign in" : "Create account"}
           </Button>
 
-          <p className="auth-switch">
+          {(signupsOpen || !isLogin) && <p className="auth-switch">
             {isLogin ? "New to Zyqra?" : "Already have an account?"}
             <button type="button" onClick={switchMode}>{isLogin ? "Create an account" : "Sign in"}</button>
-          </p>
+          </p>}
         </form>
       </main>
     </div>

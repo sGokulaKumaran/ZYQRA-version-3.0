@@ -1,24 +1,19 @@
-"""AI engine status, app metadata and global search."""
+"""App metadata and global search."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .. import __version__, models
-from ..ai import engine, prompts
+from ..ai import prompts
 from ..database import get_db
 from ..security import get_current_user
 
 router = APIRouter(prefix="/api", tags=["system"])
 
 SEARCH_LIMIT = 5
-
-
-class ModelTest(BaseModel):
-    id: str  # "provider:model"
 
 
 @router.get("/health")
@@ -33,18 +28,6 @@ def meta(_: models.User = Depends(get_current_user)):
         "chat_modes": [{"id": key, "label": m["label"], "hint": m["hint"]} for key, m in prompts.CHAT_MODES.items()],
         "note_actions": [{"id": key, "label": a["label"]} for key, a in prompts.NOTE_ACTIONS.items()],
     }
-
-
-@router.get("/ai/status")
-def ai_status(refresh: bool = False, _: models.User = Depends(get_current_user)):
-    """The fallback chain with each model's live state. `refresh` re-reads provider model lists."""
-    engine.discover(force=refresh)
-    return engine.status()
-
-
-@router.post("/ai/test")
-def ai_test(body: ModelTest, _: models.User = Depends(get_current_user)):
-    return engine.test(body.id)
 
 
 @router.get("/search")

@@ -14,6 +14,7 @@ import { useUI } from "../../context/UIContext";
 import { api, errorMessage } from "../../lib/api";
 import { timeAgo } from "../../lib/format";
 import type { Chat, DeckDetail, Message, ModelMeta, NoteDetail } from "../../lib/types";
+import ModelPicker from "./ModelPicker";
 import "./chat.css";
 
 const MODE_ICON: Record<string, IconName> = {
@@ -30,6 +31,8 @@ const STARTERS: { icon: IconName; title: string; prompt: string }[] = [
   { icon: "code", title: "Debug my code", prompt: "Explain recursion in Python with a small example and the most common mistake beginners make." },
   { icon: "book", title: "Summarise a topic", prompt: "Summarise the causes of World War I in 6 bullet points I can revise from." },
 ];
+
+const MODEL_KEY = "zyqra_chat_model";
 
 interface Draft {
   text: string;
@@ -49,7 +52,7 @@ export default function ChatPage({ active }: PageProps) {
   const [draft, setDraft] = useState<Draft | null>(null); // the answer being streamed
   const [error, setError] = useState("");
   const [newChatMode, setNewChatMode] = useState("tutor");
-  const [preferred, setPreferred] = useState<string | null>(null); // model id, null = automatic
+  const [preferred, setPreferred] = useState<string | null>(() => localStorage.getItem(MODEL_KEY)); // model id, null = automatic
   const [filter, setFilter] = useState("");
   const [panelOpen, setPanelOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -65,8 +68,13 @@ export default function ChatPage({ active }: PageProps) {
   const streaming = draft !== null;
   const modes = meta?.chat_modes ?? [];
   const modeLabel = modes.find((m) => m.id === mode)?.label ?? "Tutor";
-  const readyModels = useMemo(() => (ai?.chain ?? []).filter((m) => m.state === "ready"), [ai]);
-  const preferredModel = readyModels.find((m) => m.id === preferred) ?? null;
+  const pickable = useMemo(() => (ai?.chain ?? []).filter((m) => m.state === "ready" || m.state === "cooldown"), [ai]);
+
+  const choosePreferred = (id: string | null) => {
+    setPreferred(id);
+    if (id) localStorage.setItem(MODEL_KEY, id);
+    else localStorage.removeItem(MODEL_KEY);
+  };
 
   const loadChats = useCallback(async () => {
     try {
@@ -489,27 +497,12 @@ export default function ChatPage({ active }: PageProps) {
               onKeyDown={onKeyDown}
             />
             <div className="composer-bar">
-              <Menu
-                direction="up"
-                trigger={(toggle) => (
-                  <button type="button" className="composer-model" onClick={toggle} title="Choose which model answers">
-                    <Icon name="cpu" size={15} />
-                    {preferredModel ? preferredModel.label : "Auto"}
-                    <Icon name="chevronUp" size={13} />
-                  </button>
-                )}
-              >
-                {(close) => (
-                  <div className="composer-model-menu">
-                    <div className="menu-label">Answer with</div>
-                    <MenuItem icon="sparkles" label="Auto" hint="Best available model, with automatic fallback" active={!preferredModel} onClick={() => { setPreferred(null); close(); }} />
-                    {readyModels.map((m) => (
-                      <MenuItem key={m.id} icon="cpu" label={m.label} hint={m.provider_name} active={m.id === preferredModel?.id} onClick={() => { setPreferred(m.id); close(); }} />
-                    ))}
-                    {readyModels.length === 0 && <div className="panel-empty">No model is available right now.</div>}
-                  </div>
-                )}
-              </Menu>
+              <ModelPicker
+                models={pickable}
+                value={preferred}
+                onChange={choosePreferred}
+                onManage={() => openSettings("ai")}
+              />
               <span className="composer-hint"><kbd className="kbd">Enter</kbd> to send · <kbd className="kbd">Shift</kbd>+<kbd className="kbd">Enter</kbd> new line</span>
               {streaming ? (
                 <button type="button" className="composer-send stop" onClick={stop} aria-label="Stop answering" title="Stop">

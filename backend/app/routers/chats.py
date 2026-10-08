@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..ai import AIError, AIResult, engine, prompts
+from ..ai.personal import user_chain
 from ..common import iso, owned
 from ..database import SessionLocal, get_db
 from ..models import utcnow
@@ -154,6 +155,8 @@ def ask(chat_id: int, body: Ask, user: models.User = Depends(get_current_user), 
         "chat": chat_out(chat),
     }
 
+    own_models = user_chain(user)  # read now: the request's session is gone once streaming starts
+
     def save(parts: list[str], answered_by: AIResult | None) -> dict | None:
         text = "".join(parts)
         if not text.strip():
@@ -179,7 +182,7 @@ def ask(chat_id: int, body: Ask, user: models.User = Depends(get_current_user), 
         error = None
         yield _sse(opening)
         try:
-            for item in engine.stream(history, prefer=body.model):
+            for item in engine.stream(history, prefer=body.model, chain=own_models):
                 if isinstance(item, AIResult):
                     answered_by = item
                     yield _sse({"type": "meta", **item.meta()})

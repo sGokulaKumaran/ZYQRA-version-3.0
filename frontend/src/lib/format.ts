@@ -70,6 +70,12 @@ export function formatWait(seconds: number): string {
   return `${Math.round(seconds / 3600)} h`;
 }
 
+/** A context window in tokens: 131072 -> "131K", 1048576 -> "1M". */
+export function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(1)}M`;
+  return tokens >= 1000 ? `${Math.round(tokens / 1000)}K` : String(tokens);
+}
+
 export const plural = (count: number, word: string, many = `${word}s`): string =>
   `${count} ${count === 1 ? word : many}`;
 
