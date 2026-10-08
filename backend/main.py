@@ -16,7 +16,7 @@ import json
 # =========================
 # GEMINI CONFIG
 # =========================
-genai.configure(api_key="AIzaSyCr9fx-LRN8uG6o7xSoWUZ98km8-tkJMJ4")
+genai.configure(api_key="AIzaSyANgrP7SRXx1iDgZJVDXgtQCI0_ZCGUiRI")
 
 model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -66,41 +66,43 @@ class UserRequest(BaseModel):
     username: str
     password: str
 
+class RenameUserRequest(BaseModel):
+    old_username: str
+    new_username: str
+
+class ChangePasswordRequest(BaseModel):
+    username: str
+    current_password: str
+    new_password: str
 
 class ChatPayload(BaseModel):
     message: str
     chat_id: int
-
 
 class QuizRequest(BaseModel):
     topic: str
     count: int = 10
     difficulty: str = "Medium"
 
-
 class QuizSubmit(BaseModel):
     quiz: List[dict]
     answers: List[str]
     user_id: int = 1
-
 
 class FlashcardRequest(BaseModel):
     topic: str
     count: int = 10
     user_id: int = 1
 
-
 class FlashcardFromWrongRequest(BaseModel):
-    wrong_questions: List[dict]   # [{question, answer}, ...]
+    wrong_questions: List[dict]
     topic: str
     user_id: int = 1
-
 
 class NoteCreate(BaseModel):
     title: str = "Untitled Note"
     content: str = ""
     user_id: int = 1
-
 
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
@@ -127,7 +129,7 @@ def root():
 
 
 # =========================
-# SIGNUP / LOGIN
+# SIGNUP
 # =========================
 @app.post("/signup")
 def signup(user: UserRequest, db: Session = Depends(get_db)):
@@ -140,6 +142,9 @@ def signup(user: UserRequest, db: Session = Depends(get_db)):
     return {"status": "success", "message": "User created"}
 
 
+# =========================
+# LOGIN
+# =========================
 @app.post("/login")
 def login(user: UserRequest, db: Session = Depends(get_db)):
     existing = db.query(models.User).filter(models.User.username == user.username).first()
@@ -151,7 +156,38 @@ def login(user: UserRequest, db: Session = Depends(get_db)):
 
 
 # =========================
-# AI RESPONSE HELPER
+# RENAME USER
+# =========================
+@app.put("/rename_user")
+def rename_user(req: RenameUserRequest, db: Session = Depends(get_db)):
+    taken = db.query(models.User).filter(models.User.username == req.new_username).first()
+    if taken:
+        return {"status": "error", "message": "Username already taken"}
+    user = db.query(models.User).filter(models.User.username == req.old_username).first()
+    if not user:
+        return {"status": "error", "message": "User not found"}
+    user.username = req.new_username
+    db.commit()
+    return {"status": "success", "message": "Username updated"}
+
+
+# =========================
+# CHANGE PASSWORD
+# =========================
+@app.put("/change_password")
+def change_password(req: ChangePasswordRequest, db: Session = Depends(get_db)):
+    user = db.query(models.User).filter(models.User.username == req.username).first()
+    if not user:
+        return {"status": "error", "message": "User not found"}
+    if not verify_password(req.current_password, user.password):
+        return {"status": "error", "message": "Current password is incorrect"}
+    user.password = hash_password(req.new_password)
+    db.commit()
+    return {"status": "success", "message": "Password changed"}
+
+
+# =========================
+# AI HELPER
 # =========================
 def generate_ai(prompt: str) -> str:
     try:
@@ -179,12 +215,10 @@ def chat(req: ChatPayload, db: Session = Depends(get_db)):
     db.commit()
     return {"reply": reply}
 
-
 @app.get("/get_messages/{chat_id}")
 def get_messages(chat_id: int, db: Session = Depends(get_db)):
     msgs = db.query(models.Message).filter(models.Message.chat_id == chat_id).all()
     return [{"role": m.role, "text": m.content} for m in msgs]
-
 
 @app.post("/create_chat")
 def create_chat(user_id: int, db: Session = Depends(get_db)):
@@ -194,12 +228,10 @@ def create_chat(user_id: int, db: Session = Depends(get_db)):
     db.refresh(chat_obj)
     return {"chat_id": chat_obj.id}
 
-
 @app.get("/get_chats/{user_id}")
 def get_chats(user_id: int, db: Session = Depends(get_db)):
     chats = db.query(models.Chat).filter(models.Chat.user_id == user_id).order_by(models.Chat.id.desc()).all()
     return [{"id": c.id, "title": c.title} for c in chats]
-
 
 @app.delete("/delete_chat/{chat_id}")
 def delete_chat(chat_id: int, db: Session = Depends(get_db)):
@@ -209,7 +241,6 @@ def delete_chat(chat_id: int, db: Session = Depends(get_db)):
     db.delete(chat_obj)
     db.commit()
     return {"message": "Deleted"}
-
 
 @app.put("/rename_chat/{chat_id}")
 def rename_chat(chat_id: int, title: str, db: Session = Depends(get_db)):
@@ -244,7 +275,6 @@ def extract_json_array(text: str) -> list:
             pass
     return []
 
-
 def validate_questions(raw: list) -> list:
     valid = []
     for q in raw:
@@ -267,13 +297,10 @@ def generate_quiz(req: QuizRequest):
         return {"error": "Topic cannot be empty", "quiz": []}
     count = max(1, min(req.count, 30))
     difficulty = req.difficulty if req.difficulty in ("Easy", "Medium", "Hard") else "Medium"
-
     prompt = f"""
 You are a quiz generator. Generate exactly {count} multiple choice questions about: "{req.topic}".
 Difficulty: {difficulty}
-
 Respond ONLY with a valid JSON array. No markdown, no extra text.
-
 [
   {{
     "question": "...",
@@ -281,11 +308,7 @@ Respond ONLY with a valid JSON array. No markdown, no extra text.
     "answer": "A"
   }}
 ]
-
-Rules:
-- Exactly 4 options per question.
-- "answer" must exactly match one option string.
-- No text outside JSON.
+Rules: Exactly 4 options. "answer" must match one option. No text outside JSON.
 """
     try:
         response = model.generate_content(prompt)
@@ -307,7 +330,6 @@ Rules:
 def submit_quiz(req: QuizSubmit, db: Session = Depends(get_db)):
     if not req.quiz:
         return {"error": "No quiz data provided"}
-
     answers = list(req.answers)
     while len(answers) < len(req.quiz):
         answers.append("")
@@ -324,29 +346,16 @@ def submit_quiz(req: QuizSubmit, db: Session = Depends(get_db)):
             score += 1
         else:
             wrong_questions.append({"question": q.get("question", ""), "answer": correct})
-        results.append({
-            "question": q.get("question", ""),
-            "correct": correct,
-            "your": user_ans,
-            "is_correct": is_correct,
-        })
-
-    # ── Save session to DB ─────────────────────────────
-    topic = req.quiz[0].get("topic", "Quiz") if req.quiz else "Quiz"
-    # Try to extract topic from context (passed as metadata or inferred)
-    # We'll rely on frontend sending it; fall back to "Quiz"
-    session_title = f"Quiz · {len(req.quiz)} Qs"
+        results.append({"question": q.get("question", ""), "correct": correct, "your": user_ans, "is_correct": is_correct})
 
     session = models.QuizSession(
-        title=session_title,
-        topic="",           # frontend can send topic separately — see below
-        difficulty="",
-        score=score,
-        total=len(req.quiz),
+        title=f"Quiz · {len(req.quiz)} Qs",
+        topic="", difficulty="",
+        score=score, total=len(req.quiz),
         user_id=req.user_id,
     )
     db.add(session)
-    db.flush()  # get session.id
+    db.flush()
 
     for i, q in enumerate(req.quiz):
         db.add(models.QuizQuestion(
@@ -357,20 +366,15 @@ def submit_quiz(req: QuizSubmit, db: Session = Depends(get_db)):
             is_correct=results[i]["is_correct"],
             session_id=session.id,
         ))
-
     db.commit()
 
     return {
-        "score": score,
-        "total": len(req.quiz),
+        "score": score, "total": len(req.quiz),
         "percentage": round((score / len(req.quiz)) * 100) if req.quiz else 0,
-        "results": results,
-        "wrong_questions": wrong_questions,
+        "results": results, "wrong_questions": wrong_questions,
         "session_id": session.id,
     }
 
-
-# ── Update session with topic/difficulty after we know it ──
 @app.put("/quiz_session/{session_id}")
 def update_quiz_session(session_id: int, topic: str = "", difficulty: str = "", db: Session = Depends(get_db)):
     s = db.query(models.QuizSession).filter(models.QuizSession.id == session_id).first()
@@ -384,56 +388,18 @@ def update_quiz_session(session_id: int, topic: str = "", difficulty: str = "", 
     db.commit()
     return {"message": "Updated"}
 
-
-# =========================
-# QUIZ HISTORY
-# =========================
 @app.get("/quiz_sessions/{user_id}")
 def get_quiz_sessions(user_id: int, db: Session = Depends(get_db)):
-    sessions = (
-        db.query(models.QuizSession)
-        .filter(models.QuizSession.user_id == user_id)
-        .order_by(models.QuizSession.id.desc())
-        .all()
-    )
-    return [
-        {
-            "id": s.id,
-            "title": s.title,
-            "topic": s.topic,
-            "difficulty": s.difficulty,
-            "score": s.score,
-            "total": s.total,
-        }
-        for s in sessions
-    ]
-
+    sessions = db.query(models.QuizSession).filter(models.QuizSession.user_id == user_id).order_by(models.QuizSession.id.desc()).all()
+    return [{"id": s.id, "title": s.title, "topic": s.topic, "difficulty": s.difficulty, "score": s.score, "total": s.total} for s in sessions]
 
 @app.get("/quiz_session_detail/{session_id}")
 def get_quiz_session_detail(session_id: int, db: Session = Depends(get_db)):
     s = db.query(models.QuizSession).filter(models.QuizSession.id == session_id).first()
     if not s:
         return {"error": "Not found"}
-    questions = [
-        {
-            "question": q.question,
-            "options": json.loads(q.options) if q.options else [],
-            "answer": q.answer,
-            "user_answer": q.user_answer,
-            "is_correct": q.is_correct,
-        }
-        for q in s.questions
-    ]
-    return {
-        "id": s.id,
-        "title": s.title,
-        "topic": s.topic,
-        "difficulty": s.difficulty,
-        "score": s.score,
-        "total": s.total,
-        "questions": questions,
-    }
-
+    questions = [{"question": q.question, "options": json.loads(q.options) if q.options else [], "answer": q.answer, "user_answer": q.user_answer, "is_correct": q.is_correct} for q in s.questions]
+    return {"id": s.id, "title": s.title, "topic": s.topic, "difficulty": s.difficulty, "score": s.score, "total": s.total, "questions": questions}
 
 @app.delete("/quiz_session/{session_id}")
 def delete_quiz_session(session_id: int, db: Session = Depends(get_db)):
@@ -443,7 +409,6 @@ def delete_quiz_session(session_id: int, db: Session = Depends(get_db)):
     db.delete(s)
     db.commit()
     return {"message": "Deleted"}
-
 
 @app.put("/rename_quiz_session/{session_id}")
 def rename_quiz_session(session_id: int, title: str, db: Session = Depends(get_db)):
@@ -456,146 +421,79 @@ def rename_quiz_session(session_id: int, title: str, db: Session = Depends(get_d
 
 
 # =========================
-# FLASHCARDS — GENERATE (manual topic)
+# FLASHCARDS — GENERATE
 # =========================
 @app.post("/generate_flashcards")
 def generate_flashcards(req: FlashcardRequest, db: Session = Depends(get_db)):
     if not req.topic.strip():
         return {"error": "Topic cannot be empty", "deck_id": None}
-
     count = max(1, min(req.count, 50))
-
     prompt = f"""
 Create exactly {count} flashcards about: "{req.topic}".
-
 Respond ONLY with a JSON array. No markdown, no extra text.
-
 [
   {{ "front": "Term or question", "back": "Definition or answer" }}
 ]
-
-Rules:
-- front: concise term or question (under 20 words)
-- back: clear explanation (1-3 sentences)
-- No text outside JSON.
+Rules: front under 20 words, back 1-3 sentences. No text outside JSON.
 """
     try:
         response = model.generate_content(prompt)
         raw = extract_json_array(response.text)
         cards = [c for c in raw if isinstance(c, dict) and c.get("front") and c.get("back")]
-
         if not cards:
             return {"error": "AI returned invalid flashcard data.", "deck_id": None}
-
-        deck = models.FlashcardDeck(
-            title=req.topic[:50],
-            topic=req.topic,
-            user_id=req.user_id,
-        )
+        deck = models.FlashcardDeck(title=req.topic[:50], topic=req.topic, user_id=req.user_id)
         db.add(deck)
         db.flush()
-
         for c in cards:
             db.add(models.Flashcard(front=c["front"], back=c["back"], deck_id=deck.id))
-
         db.commit()
         db.refresh(deck)
-
-        return {
-            "deck_id": deck.id,
-            "title": deck.title,
-            "cards": [{"front": c["front"], "back": c["back"]} for c in cards],
-        }
-
+        return {"deck_id": deck.id, "title": deck.title, "cards": [{"front": c["front"], "back": c["back"]} for c in cards]}
     except ResourceExhausted:
         return {"error": "API rate limit reached.", "deck_id": None}
     except Exception as e:
         return {"error": f"Server error: {str(e)}", "deck_id": None}
 
-
-# =========================
-# FLASHCARDS — FROM WRONG ANSWERS
-# =========================
 @app.post("/flashcards_from_wrong")
 def flashcards_from_wrong(req: FlashcardFromWrongRequest, db: Session = Depends(get_db)):
     if not req.wrong_questions:
         return {"error": "No wrong questions provided", "deck_id": None}
-
-    pairs = "\n".join(
-        f'Q: {q["question"]}\nA: {q["answer"]}' for q in req.wrong_questions
-    )
-
+    pairs = "\n".join(f'Q: {q["question"]}\nA: {q["answer"]}' for q in req.wrong_questions)
     prompt = f"""
 Convert these quiz Q&A pairs into concise flashcards.
-
 {pairs}
-
-Respond ONLY with a JSON array. No markdown, no extra text.
-
-[
-  {{ "front": "Question or term", "back": "Answer or definition" }}
-]
+Respond ONLY with a JSON array. No markdown.
+[ {{ "front": "Question or term", "back": "Answer or definition" }} ]
 """
     try:
         response = model.generate_content(prompt)
         raw = extract_json_array(response.text)
         cards = [c for c in raw if isinstance(c, dict) and c.get("front") and c.get("back")]
-
         if not cards:
-            # Fallback: use raw wrong questions directly
             cards = [{"front": q["question"], "back": q["answer"]} for q in req.wrong_questions]
-
-        deck_title = f"Missed — {req.topic[:30]}"
-        deck = models.FlashcardDeck(
-            title=deck_title,
-            topic=req.topic,
-            user_id=req.user_id,
-        )
+        deck = models.FlashcardDeck(title=f"Missed — {req.topic[:30]}", topic=req.topic, user_id=req.user_id)
         db.add(deck)
         db.flush()
-
         for c in cards:
             db.add(models.Flashcard(front=c["front"], back=c["back"], deck_id=deck.id))
-
         db.commit()
         db.refresh(deck)
-
-        return {
-            "deck_id": deck.id,
-            "title": deck.title,
-            "cards": [{"front": c["front"], "back": c["back"]} for c in cards],
-        }
-
+        return {"deck_id": deck.id, "title": deck.title, "cards": [{"front": c["front"], "back": c["back"]} for c in cards]}
     except Exception as e:
         return {"error": f"Server error: {str(e)}", "deck_id": None}
 
-
-# =========================
-# FLASHCARD DECKS HISTORY
-# =========================
 @app.get("/flashcard_decks/{user_id}")
 def get_flashcard_decks(user_id: int, db: Session = Depends(get_db)):
-    decks = (
-        db.query(models.FlashcardDeck)
-        .filter(models.FlashcardDeck.user_id == user_id)
-        .order_by(models.FlashcardDeck.id.desc())
-        .all()
-    )
+    decks = db.query(models.FlashcardDeck).filter(models.FlashcardDeck.user_id == user_id).order_by(models.FlashcardDeck.id.desc()).all()
     return [{"id": d.id, "title": d.title, "topic": d.topic, "card_count": len(d.cards)} for d in decks]
-
 
 @app.get("/flashcard_deck/{deck_id}")
 def get_flashcard_deck(deck_id: int, db: Session = Depends(get_db)):
     deck = db.query(models.FlashcardDeck).filter(models.FlashcardDeck.id == deck_id).first()
     if not deck:
         return {"error": "Not found"}
-    return {
-        "id": deck.id,
-        "title": deck.title,
-        "topic": deck.topic,
-        "cards": [{"id": c.id, "front": c.front, "back": c.back} for c in deck.cards],
-    }
-
+    return {"id": deck.id, "title": deck.title, "topic": deck.topic, "cards": [{"id": c.id, "front": c.front, "back": c.back} for c in deck.cards]}
 
 @app.delete("/flashcard_deck/{deck_id}")
 def delete_flashcard_deck(deck_id: int, db: Session = Depends(get_db)):
@@ -605,7 +503,6 @@ def delete_flashcard_deck(deck_id: int, db: Session = Depends(get_db)):
     db.delete(deck)
     db.commit()
     return {"message": "Deleted"}
-
 
 @app.put("/rename_flashcard_deck/{deck_id}")
 def rename_flashcard_deck(deck_id: int, title: str, db: Session = Depends(get_db)):
@@ -628,17 +525,10 @@ def create_note(req: NoteCreate, db: Session = Depends(get_db)):
     db.refresh(note)
     return {"id": note.id, "title": note.title, "content": note.content}
 
-
 @app.get("/notes/{user_id}")
 def get_notes(user_id: int, db: Session = Depends(get_db)):
-    notes = (
-        db.query(models.Note)
-        .filter(models.Note.user_id == user_id)
-        .order_by(models.Note.id.desc())
-        .all()
-    )
+    notes = db.query(models.Note).filter(models.Note.user_id == user_id).order_by(models.Note.id.desc()).all()
     return [{"id": n.id, "title": n.title, "content": n.content} for n in notes]
-
 
 @app.get("/note/{note_id}")
 def get_note(note_id: int, db: Session = Depends(get_db)):
@@ -646,7 +536,6 @@ def get_note(note_id: int, db: Session = Depends(get_db)):
     if not note:
         return {"error": "Not found"}
     return {"id": note.id, "title": note.title, "content": note.content}
-
 
 @app.put("/note/{note_id}")
 def update_note(note_id: int, req: NoteUpdate, db: Session = Depends(get_db)):
@@ -660,7 +549,6 @@ def update_note(note_id: int, req: NoteUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Updated"}
 
-
 @app.delete("/note/{note_id}")
 def delete_note(note_id: int, db: Session = Depends(get_db)):
     note = db.query(models.Note).filter(models.Note.id == note_id).first()
@@ -670,7 +558,6 @@ def delete_note(note_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Deleted"}
 
-
 @app.put("/rename_note/{note_id}")
 def rename_note(note_id: int, title: str, db: Session = Depends(get_db)):
     note = db.query(models.Note).filter(models.Note.id == note_id).first()
@@ -679,3 +566,24 @@ def rename_note(note_id: int, title: str, db: Session = Depends(get_db)):
     note.title = title
     db.commit()
     return {"message": "Renamed"}
+
+
+# =========================
+# DASHBOARD ANALYTICS
+# =========================
+@app.get("/dashboard/{user_id}")
+def get_dashboard(user_id: int, db: Session = Depends(get_db)):
+    sessions = db.query(models.QuizSession).filter(models.QuizSession.user_id == user_id).all()
+    decks = db.query(models.FlashcardDeck).filter(models.FlashcardDeck.user_id == user_id).all()
+    notes = db.query(models.Note).filter(models.Note.user_id == user_id).all()
+    total_q = sum(s.total for s in sessions)
+    total_c = sum(s.score for s in sessions)
+    return {
+        "quizzes": len(sessions),
+        "total_questions": total_q,
+        "total_correct": total_c,
+        "accuracy": round((total_c / total_q) * 100) if total_q else 0,
+        "flashcard_decks": len(decks),
+        "total_cards": sum(len(d.cards) for d in decks),
+        "notes": len(notes),
+    }

@@ -1,0 +1,126 @@
+/* ═══════════════════════════════════════════════
+   ZYQRA THEME SYSTEM
+   Inject this in your index.css or main.tsx
+   ═══════════════════════════════════════════════ */
+
+/* ── DEFAULT (Cosmic Midnight — the original deep navy) ── */
+:root,
+[data-theme="default"] {
+  --bg-base:        #0f172a;
+  --bg-sidebar:     #020617;
+  --bg-card:        #1e293b;
+  --bg-input:       #1e293b;
+  --bg-hover:       rgba(255,255,255,0.04);
+  --bg-active:      rgba(59,130,246,0.15);
+
+  --border:         rgba(255,255,255,0.07);
+  --border-accent:  rgba(59,130,246,0.35);
+
+  --text-primary:   #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted:     #475569;
+  --text-dim:       #334155;
+
+  --accent:         #2563eb;
+  --accent-hover:   #1d4ed8;
+  --accent-soft:    rgba(37,99,235,0.15);
+  --accent-text:    #93c5fd;
+
+  --success:        #22c55e;
+  --success-soft:   rgba(34,197,94,0.15);
+  --success-text:   #86efac;
+
+  --warning:        #f59e0b;
+  --danger:         #ef4444;
+  --danger-soft:    rgba(239,68,68,0.15);
+  --danger-text:    #fca5a5;
+
+  --sidebar-item-text: #9ca3af;
+  --scrollbar-track:   #0f172a;
+  --scrollbar-thumb:   #1e293b;
+
+  --shadow-card: 0 4px 24px rgba(0,0,0,0.4);
+  --radius-card: 16px;
+}
+
+/* ── DARK (Pure Obsidian — deeper, higher contrast) ── */
+[data-theme="dark"] {
+  --bg-base:        #000000;
+  --bg-sidebar:     #0a0a0a;
+  --bg-card:        #111111;
+  --bg-input:       #111111;
+  --bg-hover:       rgba(255,255,255,0.05);
+  --bg-active:      rgba(99,102,241,0.18);
+
+  --border:         rgba(255,255,255,0.08);
+  --border-accent:  rgba(99,102,241,0.4);
+
+  --text-primary:   #ffffff;
+  --text-secondary: #a1a1aa;
+  --text-muted:     #52525b;
+  --text-dim:       #27272a;
+
+  --accent:         #6366f1;
+  --accent-hover:   #4f46e5;
+  --accent-soft:    rgba(99,102,241,0.15);
+  --accent-text:    #a5b4fc;
+
+  --success:        #10b981;
+  --success-soft:   rgba(16,185,129,0.15);
+  --success-text:   #6ee7b7;
+
+  --warning:        #f59e0b;
+  --danger:         #ef4444;
+  --danger-soft:    rgba(239,68,68,0.15);
+  --danger-text:    #fca5a5;
+
+  --sidebar-item-text: #71717a;
+  --scrollbar-track:   #000000;
+  --scrollbar-thumb:   #111111;
+
+  --shadow-card: 0 4px 32px rgba(0,0,0,0.7);
+}
+
+/* ── LIGHT (Paper & Ink — warm white editorial) ── */
+[data-theme="light"] {
+  --bg-base:        #f8f7f4;
+  --bg-sidebar:     #ffffff;
+  --bg-card:        #ffffff;
+  --bg-input:       #f1f0ed;
+  --bg-hover:       rgba(0,0,0,0.04);
+  --bg-active:      rgba(37,99,235,0.08);
+
+  --border:         rgba(0,0,0,0.08);
+  --border-accent:  rgba(37,99,235,0.3);
+
+  --text-primary:   #0f172a;
+  --text-secondary: #475569;
+  --text-muted:     #94a3b8;
+  --text-dim:       #cbd5e1;
+
+  --accent:         #2563eb;
+  --accent-hover:   #1d4ed8;
+  --accent-soft:    rgba(37,99,235,0.08);
+  --accent-text:    #1d4ed8;
+
+  --success:        #16a34a;
+  --success-soft:   rgba(22,163,74,0.1);
+  --success-text:   #15803d;
+
+  --warning:        #d97706;
+  --danger:         #dc2626;
+  --danger-soft:    rgba(220,38,38,0.08);
+  --danger-text:    #b91c1c;
+
+  --sidebar-item-text: #64748b;
+  --scrollbar-track:   #f8f7f4;
+  --scrollbar-thumb:   #e2e8f0;
+
+  --shadow-card: 0 2px 16px rgba(0,0,0,0.08);
+}
+
+/* ── Global scrollbar ── */
+* { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
