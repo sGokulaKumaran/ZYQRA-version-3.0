@@ -19,5 +19,15 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Pages load their data in an effect when they come into view; this rule
+      // also flags those async loaders, which only set state after awaiting.
+      'react-hooks/set-state-in-effect': 'off',
+    },
+  },
+  {
+    // A context file exports its provider together with its hook.
+    files: ['src/context/**'],
+    rules: { 'react-refresh/only-export-components': 'off' },
   },
 ])

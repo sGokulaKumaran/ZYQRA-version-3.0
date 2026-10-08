@@ -1,0 +1,45 @@
+.timer { position: fixed; z-index: 800; }
+
+.timer-pill {
+  display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px;
+  border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow-md);
+  font-size: 13.5px; font-weight: 650; font-variant-numeric: tabular-nums;
+  cursor: grab; touch-action: none; user-select: none;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.timer-pill:active { cursor: grabbing; }
+.timer-pill:hover { border-color: var(--accent-border); }
+.timer-pill svg { color: var(--text-3); }
+.timer-pill.running { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.timer-pill.running svg { color: var(--on-accent); }
+.timer-pill.running.break { background: var(--success); border-color: var(--success); }
+
+.timer-panel {
+  position: absolute; right: 0; width: 300px; padding: 14px;
+  display: flex; flex-direction: column; gap: 14px;
+  box-shadow: var(--shadow-lg); border-color: var(--border-strong);
+  animation: pop-in 0.16s var(--ease);
+}
+.timer-panel.above { bottom: calc(100% + 10px); }
+.timer-panel.below { top: calc(100% + 10px); }
+.timer-panel .seg { width: 100%; }
+.timer-panel .seg button { flex: 1; justify-content: center; padding: 0 6px; }
+
+.timer-head { display: flex; align-items: center; gap: 6px; color: var(--text-2); }
+.timer-head strong { flex: 1; margin-left: 2px; font-size: 13.5px; color: var(--text); }
+
+.timer-ring { display: grid; place-items: center; padding: 4px 0; }
+.timer-clock { font-size: 36px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.timer-sub { margin-top: 2px; font-size: 12px; color: var(--text-3); }
+.timer-actions { display: flex; align-items: center; gap: 8px; }
+.timer-actions .icon-btn { width: 36px; height: 36px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.timer-foot { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: var(--text-3); }
+.timer-edit { display: flex; flex-direction: column; gap: 10px; }
+
+/* On phones the pill docks in the top bar instead of floating over the page. */
+@media (max-width: 860px) {
+  .timer { top: 8px; right: 52px !important; bottom: auto !important; }
+  .timer-pill { height: 36px; padding: 0 11px; box-shadow: none; cursor: pointer; }
+  .timer-panel, .timer-panel.above, .timer-panel.below { top: calc(100% + 12px); bottom: auto; right: -40px; width: min(300px, calc(100vw - 24px)); }
+}

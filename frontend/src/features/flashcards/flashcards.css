@@ -1,0 +1,55 @@
+/* Study session */
+.study { display: flex; flex-direction: column; align-items: center; gap: 22px; min-height: 100%; padding: 22px 24px 32px; }
+.study-top { display: flex; align-items: center; gap: 14px; width: 100%; max-width: 620px; font-size: 12px; font-weight: 600; color: var(--text-3); }
+.study-top .progress { flex: 1; }
+
+/* A definite height: the card and its faces size themselves from it. */
+.flip-scene { width: 100%; max-width: 620px; height: clamp(260px, 46vh, 420px); flex-shrink: 0; perspective: 1400px; }
+.flip-card { position: relative; display: block; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform 0.5s var(--ease); }
+.flip-card.flipped { transform: rotateY(180deg); }
+.flip-face {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 36px 32px; text-align: center; backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-xl); background: var(--surface); box-shadow: var(--shadow-md);
+}
+.flip-face.back { transform: rotateY(180deg); border-color: var(--accent-border); background: linear-gradient(180deg, var(--accent-soft), transparent 55%), var(--surface); }
+.flip-face small { position: absolute; top: 16px; left: 20px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.flip-face.back small { color: var(--accent-text); }
+.flip-face em { position: absolute; bottom: 16px; display: inline-flex; align-items: center; gap: 6px; font-style: normal; font-size: 12px; color: var(--text-4); }
+.flip-text { max-height: 100%; overflow-y: auto; font-size: 20px; font-weight: 600; line-height: 1.5; color: var(--text); white-space: pre-wrap; }
+.flip-face.back .flip-text { font-size: 17px; font-weight: 500; }
+
+.study-actions { display: flex; justify-content: center; gap: 10px; width: 100%; max-width: 620px; min-height: 64px; }
+.ratings { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; width: 100%; }
+.rating {
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); transition: all 0.15s;
+}
+.rating b { font-size: 13.5px; }
+.rating span { font-size: 11.5px; color: var(--text-3); }
+.rating .kbd { margin-top: 4px; }
+.rating:hover:not(:disabled) { transform: translateY(-1px); }
+.rating.again b { color: var(--danger-text); }
+.rating.again:hover:not(:disabled) { border-color: var(--danger); background: var(--danger-soft); }
+.rating.hard b { color: var(--warning-text); }
+.rating.hard:hover:not(:disabled) { border-color: var(--warning); background: var(--warning-soft); }
+.rating.good b { color: var(--accent-text); }
+.rating.good:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.rating.easy b { color: var(--success-text); }
+.rating.easy:hover:not(:disabled) { border-color: var(--success); background: var(--success-soft); }
+.rating:disabled { opacity: 0.5; }
+
+/* Cards tab */
+.cards-tab { display: flex; flex-direction: column; gap: 18px; }
+.cards-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+.mini-card { display: flex; flex-direction: column; overflow: hidden; }
+.mini-front { padding: 14px 16px; font-size: 14px; font-weight: 650; line-height: 1.45; }
+.mini-back { flex: 1; padding: 12px 16px; border-top: 1px dashed var(--border-strong); font-size: 13px; color: var(--text-2); line-height: 1.5; white-space: pre-wrap; }
+.mini-card footer { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 6px 16px; border-top: 1px solid var(--border); font-size: 11.5px; }
+.mini-card footer > span:last-child { display: flex; }
+
+@media (max-width: 560px) {
+  .flip-text { font-size: 17px; }
+  .rating .kbd { display: none; }
+}

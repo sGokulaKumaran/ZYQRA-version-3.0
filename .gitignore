@@ -1,0 +1,28 @@
+# Secrets - never commit API keys
+.env
+.env.*
+!.env.example
+backend/.secret_key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local databases (your data stays on your machine)
+*.db
+*.db-journal
+
+# Node
+node_modules/
+dist/
+*.local
+
+# Editors / OS / tooling
+.vscode/*
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+.claude/

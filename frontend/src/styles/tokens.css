@@ -1,0 +1,152 @@
+/* ============================================================
+   Zyqra design tokens
+   Every colour, radius and shadow in the app comes from here.
+   Three themes share one set of names; components never use
+   raw colour values.
+   ============================================================ */
+
+:root {
+  --font: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  --sidebar-width: 244px;
+  --sidebar-rail: 64px;
+  --panel-width: 272px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* ── Midnight (default) — deep navy ─────────────────────────── */
+:root,
+[data-theme="default"] {
+  color-scheme: dark;
+
+  --bg: #0b1220;
+  --bg-elev: #080d18;
+  --surface: #131c2e;
+  --surface-2: #1a2540;
+  --hover: rgba(148, 163, 184, 0.08);
+  --active: rgba(96, 165, 250, 0.14);
+
+  --border: rgba(148, 163, 184, 0.14);
+  --border-strong: rgba(148, 163, 184, 0.26);
+
+  --text: #eef2f8;
+  --text-2: #a9b4c7;
+  --text-3: #6f7c93;
+  --text-4: #46526a;
+
+  --accent: #3b82f6;
+  --accent-hover: #2f6fe0;
+  --accent-soft: rgba(59, 130, 246, 0.14);
+  --accent-border: rgba(59, 130, 246, 0.4);
+  --accent-text: #8fbcff;
+  --on-accent: #ffffff;
+
+  --success: #22c55e;
+  --success-soft: rgba(34, 197, 94, 0.13);
+  --success-text: #7ee2a4;
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.14);
+  --warning-text: #fbc662;
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.13);
+  --danger-text: #fca5a5;
+
+  --code-bg: #070b14;
+  --overlay: rgba(3, 7, 15, 0.66);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Obsidian — true black, high contrast ───────────────────── */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #050506;
+  --bg-elev: #0b0b0d;
+  --surface: #111114;
+  --surface-2: #19191e;
+  --hover: rgba(255, 255, 255, 0.06);
+  --active: rgba(129, 140, 248, 0.16);
+
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.2);
+
+  --text: #fafafa;
+  --text-2: #b4b4bd;
+  --text-3: #7c7c87;
+  --text-4: #4b4b54;
+
+  --accent: #6366f1;
+  --accent-hover: #5558e6;
+  --accent-soft: rgba(99, 102, 241, 0.16);
+  --accent-border: rgba(129, 140, 248, 0.45);
+  --accent-text: #a9b1ff;
+  --on-accent: #ffffff;
+
+  --success: #10b981;
+  --success-soft: rgba(16, 185, 129, 0.14);
+  --success-text: #6ee7b7;
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.14);
+  --warning-text: #fbc662;
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.14);
+  --danger-text: #fca5a5;
+
+  --code-bg: #000000;
+  --overlay: rgba(0, 0, 0, 0.72);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.75);
+}
+
+/* ── Paper — warm light ─────────────────────────────────────── */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f6f5f1;
+  --bg-elev: #fdfcfa;
+  --surface: #ffffff;
+  --surface-2: #f0efea;
+  --hover: rgba(15, 23, 42, 0.05);
+  --active: rgba(37, 99, 235, 0.09);
+
+  --border: rgba(15, 23, 42, 0.1);
+  --border-strong: rgba(15, 23, 42, 0.2);
+
+  --text: #111827;
+  --text-2: #465264;
+  --text-3: #7a8494;
+  --text-4: #a9b1bd;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4fd0;
+  --accent-soft: rgba(37, 99, 235, 0.09);
+  --accent-border: rgba(37, 99, 235, 0.35);
+  --accent-text: #1d4ed8;
+  --on-accent: #ffffff;
+
+  --success: #16a34a;
+  --success-soft: rgba(22, 163, 74, 0.1);
+  --success-text: #15803d;
+  --warning: #d97706;
+  --warning-soft: rgba(217, 119, 6, 0.11);
+  --warning-text: #b45309;
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.08);
+  --danger-text: #b91c1c;
+
+  --code-bg: #f3f2ee;
+  --overlay: rgba(15, 23, 42, 0.38);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.1);
+  --shadow-lg: 0 24px 64px rgba(15, 23, 42, 0.18);
+}
