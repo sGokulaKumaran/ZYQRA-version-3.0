@@ -36,8 +36,9 @@ def user_chain(user: models.User) -> list[ModelEntry] | None:
     return None if items is None else engine.build_chain(items)
 
 
-def complete_for(user: models.User, messages: list[dict], **options) -> AIResult:
-    return engine.complete(messages, chain=user_chain(user), **options)
+def complete_for(user: models.User, effort: str, messages: list[dict], **options) -> AIResult:
+    """Answer with the user's own models; `effort` says how demanding the task is."""
+    return engine.complete(messages, chain=user_chain(user), effort=effort, **options)
 
 
 # ─── Editing ───────────────────────────────────────────────────────────
@@ -78,26 +79,24 @@ def add(db: Session, user: models.User, provider: str, model: str) -> None:
     _save(db, user, items)
 
 
-def update(db: Session, user: models.User, model_id: str, *, enabled: bool | None, label: str | None) -> None:
+def update(db: Session, user: models.User, model_id: str, *, enabled: bool | None, label: str | None,
+           tier: str | None = None) -> None:
     items = _editable(user)
     item = items[_index(items, model_id)]
     if enabled is not None:
         item["enabled"] = enabled
     if label is not None and label.strip():
         item["label"] = label.strip()[:60]
+    if tier == "auto":
+        item.pop("tier", None)
+    elif tier is not None:
+        item["tier"] = tier
     _save(db, user, items)
 
 
 def remove(db: Session, user: models.User, model_id: str) -> None:
     items = _editable(user)
     del items[_index(items, model_id)]
-    _save(db, user, items)
-
-
-def reorder(db: Session, user: models.User, model_ids: list[str]) -> None:
-    items = _editable(user)
-    rank = {model_id: index for index, model_id in enumerate(model_ids)}
-    items.sort(key=lambda item: rank.get(_key(item), len(rank)))
     _save(db, user, items)
 
 

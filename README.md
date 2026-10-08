@@ -1,8 +1,8 @@
 # Zyqra
 
 An AI study companion: tutor chat, quizzes, spaced-repetition flashcards, Markdown notes,
-a study planner and a focus timer — backed by a multi-provider AI engine that falls back
-automatically when a model hits its rate limit.
+a study planner and a focus timer — backed by a multi-provider AI engine that picks a model
+to suit each question and steps around any that has hit its usage limit.
 
 ## Features
 
@@ -30,7 +30,7 @@ backend/
     database.py        engine, sessions, additive migrations
     models.py          SQLAlchemy models
     security.py        password hashing, JWT, current-user dependency
-    ai/                fallback engine, provider presets, config store, prompts
+    ai/                engine (routing, limits, fallback), provider presets, config store, prompts
     routers/           auth, chats, quiz, flashcards, notes, planner, dashboard, ai, admin, system
 frontend/
   src/
@@ -104,18 +104,30 @@ it back.
 **Free models only** (on by default) stops Zyqra from ever calling a model that is billed,
 including as a fallback, for every user.
 
-### Automatic fallback
+### Auto: the right model for each question
 
-The model list is also the fallback order. With the chat set to **Auto**, each request tries the
-list from the top and uses the first model that answers.
+There is no model order to manage. With the chat set to **Auto**, Zyqra decides per request:
 
-- A model that returns a rate-limit error is put on **cooldown** for as long as the provider
-  says (or an increasing back-off if it doesn't say) and the next model takes over.
-- A daily quota error cools the model until the provider's daily reset, re-checking hourly.
-- When the cooldown ends the model is used again, so traffic **returns to the best model
-  automatically**.
+1. **How demanding is it?** Judged instantly from the wording and length, with no extra AI
+   call: a *quick question* (a greeting, a definition), an *everyday question*, or a *hard
+   problem* (maths, code, proofs, long reasoning).
+2. **Which kind of model fits?** Every model is **Powerful**, **Balanced** or **Fast**. Zyqra
+   works this out from the model's name and size; change it per model in Settings if you
+   disagree. Quick questions go to Fast models, hard problems to Powerful ones, so the strong
+   models' free quota is kept for work that needs it.
+3. **Which one has room?** Among models of the same kind, the least busy goes first.
 
-Move a model up or down to change its priority, or switch it off without removing it.
+### Usage limits
+
+- Zyqra counts the requests it sends to each model and reads the "requests remaining"
+  figures providers send back. Settings shows both.
+- The moment a model runs out — the provider says zero left, or answers "rate limit" — it is
+  marked **Limit reached**, greyed out in the chat menu, and skipped until it resets. It then
+  comes back on its own.
+- If the chosen model fails mid-request, the next best one answers instead.
+- Counts and active limits are kept across restarts (`backend/.ai_state.json`).
+
+Switch a model off without removing it, or pick one model by hand in the chat, at any time.
 
 ### Where things are stored
 

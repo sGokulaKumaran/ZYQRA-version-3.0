@@ -7,10 +7,11 @@ import { useUI } from "../../context/UIContext";
 import { api } from "../../lib/api";
 import { formatTokens, formatWait, plural } from "../../lib/format";
 import type {
-  AIProvider, AIStatus, ChainModel, FreeRule, OfferedModel, ProviderField, ProviderModels, ProviderPreset,
+  AIProvider, AIStatus, ChainModel, Effort, FreeRule, OfferedModel, ProviderField, ProviderModels, ProviderPreset, Tier,
 } from "../../lib/types";
 import { Button, IconButton } from "../ui/Button";
 import Icon from "../ui/Icon";
+import type { IconName } from "../ui/Icon";
 import { FreeBadge, Segmented, Spinner, Switch } from "../ui/primitives";
 
 type View = { kind: "models" } | { kind: "providers" } | { kind: "provider"; id: string } | { kind: "add" };
@@ -55,19 +56,56 @@ function ProviderStatus({ provider }: { provider: AIProvider }) {
 }
 
 // ─── My models ────────────────────────────────────────────────
+const TIER_INFO: Record<Tier, { label: string; use: string; icon: IconName }> = {
+  strong: { label: "Powerful", use: "Hard problems: maths, code, proofs, long reasoning", icon: "trophy" },
+  balanced: { label: "Balanced", use: "Everyday questions and explanations", icon: "layers" },
+  light: { label: "Fast", use: "Quick questions and short answers", icon: "bolt" },
+};
+const TIER_ORDER: Tier[] = ["strong", "balanced", "light"];
+const EFFORT_LABEL: Record<Effort, string> = { simple: "Quick questions", standard: "Everyday questions", complex: "Hard problems" };
+
+/** A model that is set aside for now: it reached a usage limit, or its provider is failing. */
+const unavailable = (model: ChainModel) => model.state === "limit" || model.state === "cooldown";
+
 function StateBadge({ model }: { model: ChainModel }) {
   if (model.state === "ready") return <span className="badge success"><Icon name="dotFilled" size={10} />Ready</span>;
-  if (model.state === "cooldown") {
+  if (model.state === "limit") {
     return (
       <span className="badge warning" title={model.last_error}>
         <Icon name="clock" size={12} />
-        {model.reason || "Cooling down"} · back in {formatWait(model.cooldown_seconds)}
+        {model.reason || "Usage limit reached"} · back in {formatWait(model.cooldown_seconds)}
+      </span>
+    );
+  }
+  if (model.state === "cooldown") {
+    return (
+      <span className="badge danger" title={model.last_error}>
+        <Icon name="alertTriangle" size={12} />
+        {model.reason || "Not responding"} · retry in {formatWait(model.cooldown_seconds)}
       </span>
     );
   }
   if (model.state === "blocked") return <span className="badge warning"><Icon name="lock" size={12} />Off while free-only is on</span>;
   if (model.state === "no_key") return <span className="badge"><Icon name="key" size={12} />Provider needs a key</span>;
   return <span className="badge">Switched off</span>;
+}
+
+/** Requests sent today, plus what the provider says is left when it reports that. */
+function UsageMeter({ model }: { model: ChainModel }) {
+  const known = model.limit !== null && model.remaining !== null && model.limit > 0;
+  if (!known && model.used_today === 0) return null;
+  const left = known ? Math.max(0, Math.min(100, (model.remaining! / model.limit!) * 100)) : 0;
+  return (
+    <span className="usage" title="Requests Zyqra sent to this model today, and the allowance its provider last reported.">
+      {plural(model.used_today, "request")} today
+      {known && (
+        <>
+          <span className={`usage-bar ${left < 15 ? "low" : ""}`}><i style={{ width: `${left}%` }} /></span>
+          {model.remaining!.toLocaleString()} of {model.limit!.toLocaleString()} left
+        </>
+      )}
+    </span>
+  );
 }
 
 function MyModels({ ai, onBrowse }: { ai: AIStatus; onBrowse: () => void }) {
@@ -94,14 +132,10 @@ function MyModels({ ai, onBrowse }: { ai: AIStatus; onBrowse: () => void }) {
     void refreshAI();
   };
 
-  const move = (index: number, delta: number) => {
-    const ids = ai.chain.map((m) => m.id);
-    [ids[index], ids[index + delta]] = [ids[index + delta], ids[index]];
-    return act(ai.chain[index].id, () => api.put<AIStatus>("/api/ai/models/order", { ids }));
-  };
-
-  const active = ai.chain.find((m) => m.id === ai.active);
   const configured = ai.providers.some((p) => p.configured);
+  const label = (id: string | null) => ai.chain.find((m) => m.id === id)?.label;
+  const limited = ai.chain.filter(unavailable).length;
+  const anyReady = ai.chain.some((m) => m.state === "ready");
 
   return (
     <div className="set-section">
@@ -111,11 +145,28 @@ function MyModels({ ai, onBrowse }: { ai: AIStatus; onBrowse: () => void }) {
           <Icon name="key" size={16} />
           <span>No provider is connected yet. {manage ? "Open Providers and add an API key to get started." : "The administrator has to connect one first."}</span>
         </p>
-      ) : active ? (
-        <p className="notice accent"><Icon name="sparkles" size={16} /><span>Answering now: <b>{active.label}</b> ({active.provider_name})</span></p>
-      ) : ai.chain.length > 0 ? (
-        <p className="notice warning"><Icon name="clock" size={16} />No selected model can answer right now. Requests resume as soon as one recovers.</p>
+      ) : ai.chain.length > 0 && !anyReady ? (
+        <p className="notice warning"><Icon name="clock" size={16} />No selected model can answer right now. Requests resume as soon as one is available again.</p>
+      ) : limited > 0 ? (
+        <p className="notice warning">
+          <Icon name="clock" size={16} />
+          <span>{plural(limited, "model")} can't be used right now. Auto is working with the rest and will bring {limited === 1 ? "it" : "them"} back automatically.</span>
+        </p>
       ) : null}
+
+      {anyReady && (
+        <div className="routes">
+          <div className="routes-head"><Icon name="sparkles" size={16} /><b>Auto</b><span>picks a model to match each question, right now:</span></div>
+          <dl>
+            {(Object.keys(EFFORT_LABEL) as Effort[]).map((effort) => (
+              <div key={effort}>
+                <dt>{EFFORT_LABEL[effort]}</dt>
+                <dd>{label(ai.routes[effort]) ?? "No model available"}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
 
       <div className="guard">
         <Icon name="shield" size={18} />
@@ -161,64 +212,85 @@ function MyModels({ ai, onBrowse }: { ai: AIStatus; onBrowse: () => void }) {
       ) : (
         <>
           <p className="hint">
-            These are the models offered in the chat. On <b>Auto</b>, Zyqra tries them from the top: when one hits its limit
-            the next takes over, and it returns to the higher one as soon as that recovers.
+            There is no order to manage. Auto sends each request to the kind of model it needs, shares the load between
+            models of the same kind, and skips any that has reached its usage limit until it resets.
           </p>
-          <ol className="chain">
-            {ai.chain.map((model, index) => {
-              const result = tests[model.id];
-              const off = model.state === "no_key" || model.state === "disabled" || model.state === "blocked";
-              return (
-                <li key={model.id} className={`chain-row ${model.id === ai.active ? "active" : ""} ${off ? "off" : ""}`}>
-                  <span className="chain-pos">{model.position}</span>
-                  <div className="chain-main">
-                    <div className="chain-title">
-                      <b>{model.label}</b>
-                      <FreeBadge free={model.free} />
-                      {model.listed === false && (
-                        <span className="badge danger" title="The provider's current model list does not include this ID.">
-                          <Icon name="alertTriangle" size={12} />Not offered by provider
-                        </span>
-                      )}
-                    </div>
-                    <code>
-                      {model.provider_name} · {model.model}
-                      {model.context ? ` · ${formatTokens(model.context)} context` : ""}
-                    </code>
-                    <div className="chain-meta">
-                      <StateBadge model={model} />
-                      {(model.ok > 0 || model.failed > 0) && <span>{model.ok} answered · {model.failed} failed</span>}
-                      {result && result !== "running" && (
-                        result.ok
-                          ? <span className="ok"><Icon name="checkCircle" size={13} />Works · {result.latency_ms} ms</span>
-                          : <span className="bad" title={result.error}><Icon name="closeCircle" size={13} />{result.error}</span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="chain-actions">
-                    {model.state !== "no_key" && (
-                      <Button size="sm" variant="secondary" loading={result === "running"} onClick={() => void test(model.id)}>Test</Button>
-                    )}
-                    <IconButton size="sm" icon="chevronUp" label="Try earlier" disabled={index === 0 || busy !== null} onClick={() => void move(index, -1)} />
-                    <IconButton size="sm" icon="chevronDown" label="Try later" disabled={index === ai.chain.length - 1 || busy !== null} onClick={() => void move(index, 1)} />
-                    <IconButton
-                      size="sm"
-                      icon={model.state === "disabled" ? "eyeOff" : "eye"}
-                      label={model.state === "disabled" ? "Switch on" : "Switch off without removing"}
-                      disabled={busy !== null}
-                      onClick={() => void act(model.id, () => api.patch<AIStatus>("/api/ai/models", { id: model.id, enabled: model.state === "disabled" }))}
-                    />
-                    <IconButton
-                      size="sm" icon="trash" label="Remove from my models" danger
-                      loading={busy === model.id}
-                      disabled={busy !== null}
-                      onClick={() => void act(model.id, () => api.post<AIStatus>("/api/ai/models/remove", { id: model.id }))}
-                    />
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+          {TIER_ORDER.map((tier) => {
+            const models = ai.chain.filter((m) => m.tier === tier);
+            if (models.length === 0) return null;
+            return (
+              <div key={tier} className="tier-group">
+                <div className="tier-head">
+                  <Icon name={TIER_INFO[tier].icon} size={15} />
+                  <b>{TIER_INFO[tier].label}</b>
+                  <span>{TIER_INFO[tier].use}</span>
+                </div>
+                <ul className="chain">
+                  {models.map((model) => {
+                    const result = tests[model.id];
+                    const off = model.state !== "ready";
+                    return (
+                      <li key={model.id} className={`chain-row ${off ? "off" : ""}`}>
+                        <div className="chain-main">
+                          <div className="chain-title">
+                            <b>{model.label}</b>
+                            <FreeBadge free={model.free} />
+                            {model.listed === false && (
+                              <span className="badge danger" title="The provider's current model list does not include this ID.">
+                                <Icon name="alertTriangle" size={12} />Not offered by provider
+                              </span>
+                            )}
+                          </div>
+                          <code>
+                            {model.provider_name} · {model.model}
+                            {model.context ? ` · ${formatTokens(model.context)} context` : ""}
+                          </code>
+                          <div className="chain-meta">
+                            <StateBadge model={model} />
+                            <UsageMeter model={model} />
+                            {result && result !== "running" && (
+                              result.ok
+                                ? <span className="ok"><Icon name="checkCircle" size={13} />Works · {result.latency_ms} ms</span>
+                                : <span className="bad" title={result.error}><Icon name="closeCircle" size={13} />{result.error}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="chain-actions">
+                          <select
+                            className="select tier-select"
+                            aria-label={`Strength of ${model.label}`}
+                            title="How capable this model is. Auto-detected from its name unless you choose."
+                            value={model.tier_auto ? "auto" : model.tier}
+                            disabled={busy !== null}
+                            onChange={(e) => void act(model.id, () => api.patch<AIStatus>("/api/ai/models", { id: model.id, tier: e.target.value }))}
+                          >
+                            <option value="auto">Auto: {TIER_INFO[model.tier].label}</option>
+                            {TIER_ORDER.map((value) => <option key={value} value={value}>{TIER_INFO[value].label}</option>)}
+                          </select>
+                          {model.state !== "no_key" && (
+                            <Button size="sm" variant="secondary" loading={result === "running"} onClick={() => void test(model.id)}>Test</Button>
+                          )}
+                          <IconButton
+                            size="sm"
+                            icon={model.state === "disabled" ? "eyeOff" : "eye"}
+                            label={model.state === "disabled" ? "Switch on" : "Switch off without removing"}
+                            disabled={busy !== null}
+                            onClick={() => void act(model.id, () => api.patch<AIStatus>("/api/ai/models", { id: model.id, enabled: model.state === "disabled" }))}
+                          />
+                          <IconButton
+                            size="sm" icon="trash" label="Remove from my models" danger
+                            loading={busy === model.id}
+                            disabled={busy !== null}
+                            onClick={() => void act(model.id, () => api.post<AIStatus>("/api/ai/models/remove", { id: model.id }))}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })}
           <div><Button variant="soft" icon="plus" onClick={onBrowse}>Add models</Button></div>
         </>
       )}

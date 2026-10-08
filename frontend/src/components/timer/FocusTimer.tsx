@@ -22,6 +22,10 @@ const MODES: { value: Mode; label: string }[] = [
 const STORAGE_KEY = "zyqra_timer";
 const LONG_BREAK_EVERY = 4;
 const MIN_LOGGED_SECONDS = 60;
+// Keep in step with timer.css: the panel's width, and the width below which the pill docks in the top bar.
+const PANEL_WIDTH = 300;
+const DOCKED_BELOW = 860;
+const EDGE_GAP = 8;
 
 interface Prefs {
   minutes: Record<Mode, number>;
@@ -79,6 +83,13 @@ export default function FocusTimer() {
   const drag = useRef<{ x: number; y: number; right: number; bottom: number; moved: boolean } | null>(null);
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)), [prefs]);
+
+  const [viewport, setViewport] = useState(window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setViewport(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   // Keep the idle clock in step with the chosen mode / duration.
   useEffect(() => {
@@ -185,11 +196,15 @@ export default function FocusTimer() {
   const tone = mode === "focus" ? "accent" : "success";
   // Open the panel downward when the pill sits in the top half of the window.
   const dropDown = prefs.bottom > window.innerHeight / 2;
+  // The panel hangs from the pill's right edge; near the left edge of the window
+  // that would push it off-screen, so slide it right just enough to fit.
+  const floating = viewport > DOCKED_BELOW;
+  const panelRight = floating ? Math.min(0, viewport - prefs.right - PANEL_WIDTH - EDGE_GAP) : undefined;
 
   return (
     <div ref={wrapRef} className="timer" style={{ right: prefs.right, bottom: prefs.bottom }}>
       {open && (
-        <section className={`timer-panel card ${dropDown ? "below" : "above"}`} aria-label="Focus timer">
+        <section className={`timer-panel card ${dropDown ? "below" : "above"}`} style={{ right: panelRight }} aria-label="Focus timer">
           <header className="timer-head">
             <Icon name="timer" size={17} />
             <strong>Focus timer</strong>

@@ -21,6 +21,8 @@ export interface ModelMeta {
   model: string;
   label: string;
   fallback: boolean;
+  /** How demanding Auto judged the request to be. */
+  effort?: Effort;
 }
 
 // ── Chat ────────────────────────────────────────────────────
@@ -187,8 +189,15 @@ export interface DashboardData {
 }
 
 // ── AI engine ───────────────────────────────────────────────
-/** `blocked`: a paid model held back by free-only mode. */
-export type ModelState = "ready" | "cooldown" | "no_key" | "disabled" | "blocked";
+/**
+ * `limit`: a usage limit was reached, back when it resets. `cooldown`: the provider is failing.
+ * `blocked`: a paid model held back by free-only mode.
+ */
+export type ModelState = "ready" | "limit" | "cooldown" | "no_key" | "disabled" | "blocked";
+
+/** How capable a model is; Auto matches it to how demanding a request is. */
+export type Tier = "strong" | "balanced" | "light";
+export type Effort = "simple" | "standard" | "complex";
 
 /** true = free tier, false = billed, null = the provider doesn't say. */
 export type Free = boolean | null;
@@ -200,7 +209,14 @@ export interface ChainModel {
   provider_name: string;
   model: string;
   label: string;
-  tier: string;
+  tier: Tier;
+  /** The tier was judged from the model's name rather than set by hand. */
+  tier_auto: boolean;
+  /** Requests sent to this model in the provider's current quota day. */
+  used_today: number;
+  /** Allowance the provider last reported, while that report is current. */
+  limit: number | null;
+  remaining: number | null;
   free: Free;
   context: number | null;
   state: ModelState;
@@ -249,6 +265,8 @@ export interface AIProvider {
 
 export interface AIStatus {
   active: string | null;
+  /** The model Auto would use right now for each kind of request. */
+  routes: Record<Effort, string | null>;
   chain: ChainModel[];
   providers: AIProvider[];
   free_only: boolean;

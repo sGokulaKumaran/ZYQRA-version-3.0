@@ -63,7 +63,8 @@
 .model-menu .input { height: 34px; font-size: 13px; }
 .model-menu-list { max-height: 340px; overflow-y: auto; }
 .model-menu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-menu .menu-item.resting { color: var(--text-3); }
+.model-menu .menu-item:disabled { opacity: 0.45; cursor: not-allowed; }
+.model-menu .menu-item:disabled:hover { background: none; color: var(--text-2); }
 .model-menu-foot { border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; margin-top: 2px; padding-top: 10px; color: var(--text-3); }
 .composer-hint { flex: 1; text-align: right; font-size: 11.5px; color: var(--text-4); }
 .composer-hint .kbd { height: 17px; min-width: 17px; font-size: 9.5px; }

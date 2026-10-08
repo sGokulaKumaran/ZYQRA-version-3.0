@@ -68,7 +68,12 @@ export default function ChatPage({ active }: PageProps) {
   const streaming = draft !== null;
   const modes = meta?.chat_modes ?? [];
   const modeLabel = modes.find((m) => m.id === mode)?.label ?? "Tutor";
-  const pickable = useMemo(() => (ai?.chain ?? []).filter((m) => m.state === "ready" || m.state === "cooldown"), [ai]);
+  const pickable = useMemo(
+    () => (ai?.chain ?? []).filter((m) => m.state === "ready" || m.state === "limit" || m.state === "cooldown"),
+    [ai],
+  );
+  // A chosen model that has hit its limit can't answer, so Auto takes over until it is back.
+  const chosen = pickable.some((m) => m.id === preferred && m.state === "ready") ? preferred : null;
 
   const choosePreferred = (id: string | null) => {
     setPreferred(id);
@@ -137,14 +142,14 @@ export default function ChatPage({ active }: PageProps) {
       try {
         await api.stream(
           `/api/chats/${chatId}/stream`,
-          { ...body, model: preferred },
+          { ...body, model: chosen },
           (event) => {
             if (event.type === "user_message") {
               const { message, chat } = event;
               if (message) setMessages((list) => [...list.filter((m) => m.id > 0), message]);
               setChats((list) => [chat, ...list.filter((c) => c.id !== chat.id)].sort((a, b) => Number(b.pinned) - Number(a.pinned)));
             } else if (event.type === "meta") {
-              const modelMeta: ModelMeta = { provider: event.provider, model: event.model, label: event.label, fallback: event.fallback };
+              const modelMeta: ModelMeta = { provider: event.provider, model: event.model, label: event.label, fallback: event.fallback, effort: event.effort };
               setDraft((d) => ({ text: d?.text ?? "", meta: modelMeta }));
             } else if (event.type === "delta") {
               text += event.text;
@@ -175,7 +180,7 @@ export default function ChatPage({ active }: PageProps) {
       }
       void refreshAI(); // a fallback or cooldown may have changed which model is active
     },
-    [preferred, refreshAI],
+    [chosen, refreshAI],
   );
 
   const send = useCallback(
@@ -499,7 +504,7 @@ export default function ChatPage({ active }: PageProps) {
             <div className="composer-bar">
               <ModelPicker
                 models={pickable}
-                value={preferred}
+                value={chosen}
                 onChange={choosePreferred}
                 onManage={() => openSettings("ai")}
               />

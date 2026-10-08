@@ -114,7 +114,8 @@ def generate(body: GenerateRequest, user: models.User = Depends(get_current_user
         raise HTTPException(status_code=422, detail="Enter a topic or choose a note to build the quiz from.")
     topic = topic or "the study material provided"
 
-    result = complete_for(user, 
+    result = complete_for(
+        user, "complex" if body.difficulty == "Hard" else "standard",
         [{"role": "user", "content": prompts.quiz(topic, body.count, body.difficulty, source)}],
         temperature=0.6,
     )

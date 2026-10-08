@@ -1,9 +1,10 @@
-"""Model chain with automatic fallback and recovery.
+"""The AI engine: smart model choice, usage limits and automatic fallback.
 
-Every request walks the chain in ai_models.json from the best model down and
-uses the first one that answers. A model that is rate limited or failing is
-put on cooldown and skipped; once the cooldown passes it is tried again, so
-traffic returns to the best model on its own as soon as its quota resets.
+Each request is matched to a model that suits it (see routing.py): a quick
+question goes to a fast model, a hard one to a powerful model. A model that
+has reached its usage limit or is failing is set aside and skipped; once the
+limit resets it is used again on its own. If the chosen model fails, the next
+best one answers instead.
 
 All providers are reached through the OpenAI-compatible chat completions API,
 which is why adding one is configuration only.
@@ -17,6 +18,7 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -26,6 +28,7 @@ from dotenv import dotenv_values
 
 from ..config import ENV_FILE, settings
 from .presets import PRESETS
+from .routing import TIER_ORDER, classify_messages, guess_tier, normalise_tier
 
 log = logging.getLogger("zyqra.ai")
 
@@ -40,6 +43,12 @@ MODEL_MISSING_COOLDOWN = 6 * 3600
 BILLING_COOLDOWN = 6 * 3600
 MAX_COOLDOWN = 24 * 3600
 DISCOVERY_TTL = 6 * 3600
+STATE_SAVE_INTERVAL = 3.0  # seconds between writes of the usage / limit state file
+# Requests per minute assumed for a model whose limit is unknown, when sharing
+# load between models of the same tier.
+ASSUMED_RPM = 15
+# A model this close to its reported limit is saved for when nothing else fits.
+NEARLY_EXHAUSTED = 0.15
 
 _DAILY_QUOTA = re.compile(r"per[\s_-]?day|daily|\bRPD\b|\bTPD\b", re.IGNORECASE)
 _DURATION = re.compile(r"(?:(\d+)h)?(?:(\d+)m(?!s))?(?:([\d.]+)s)?(?:(\d+)ms)?")
@@ -92,8 +101,10 @@ class AIResult:
     provider: str
     model: str
     label: str
-    fallback: bool  # True when a higher-priority model had to be skipped
+    fallback: bool  # True when the best-fitting model could not be used
     latency_ms: int = 0
+    effort: str = ""  # how demanding the request was judged to be
+
 
     def meta(self) -> dict:
         return {
@@ -101,6 +112,7 @@ class AIResult:
             "model": self.model,
             "label": self.label,
             "fallback": self.fallback,
+            "effort": self.effort,
         }
 
 
@@ -124,6 +136,8 @@ class Provider:
     models_url: str = ""
     models_id_field: str = "id"
     fields: list[dict] = field(default_factory=list)  # extra .env values the URL needs
+    rpm: int | None = None  # known requests-per-minute limit per model and key
+    rpd: int | None = None  # known requests-per-day limit per model and key
 
     def real_keys(self) -> list[str]:
         return [k.strip() for k in os.getenv(self.key_env, "").split(",") if k.strip()]
@@ -180,6 +194,8 @@ class ModelEntry:
     enabled: bool = True
     max_input_chars: int | None = None
     free: bool | None = None  # set to override what the provider reports
+    rpm: int | None = None
+    rpd: int | None = None
 
     @property
     def id(self) -> str:
@@ -193,6 +209,19 @@ class SlotState:
     cooldown_until: float = 0.0
     reason: str = ""
     failures: int = 0
+    kind: str = ""  # "limit": a usage limit was reached; "error": the provider is failing
+
+
+@dataclass
+class Usage:
+    """How much one model has been used, and what the provider says is left."""
+
+    day: str = ""  # the provider's quota day the count belongs to
+    today: int = 0
+    recent: deque = field(default_factory=lambda: deque(maxlen=400))  # request times, last minute
+    limit: int | None = None  # as last reported by the provider's rate-limit headers
+    remaining: int | None = None
+    resets_at: float = 0.0
 
 
 @dataclass
@@ -371,6 +400,37 @@ def _discovery_error(status: int, body: str) -> str:
     return f"The provider answered {status}: {_error_message(body)}"
 
 
+def _rate_headers(headers: httpx.Headers) -> tuple[int | None, int | None, float | None]:
+    """(limit, remaining, seconds until reset) from the usual rate-limit headers."""
+    def first(*names: str) -> str | None:
+        return next((headers[n] for n in names if n in headers), None)
+
+    def whole(value: str | None) -> int | None:
+        number = _number(value)
+        return None if number is None or number < 0 else int(number)
+
+    reset = None
+    raw = first("x-ratelimit-reset-requests", "x-ratelimit-reset")
+    if raw:
+        value = _parse_duration(raw)
+        if value is not None:
+            if value > 1e11:  # epoch milliseconds
+                value = value / 1000 - time.time()
+            elif value > 1e9:  # epoch seconds
+                value -= time.time()
+            reset = max(0.0, value)
+    return (
+        whole(first("x-ratelimit-limit-requests", "x-ratelimit-limit")),
+        whole(first("x-ratelimit-remaining-requests", "x-ratelimit-remaining")),
+        reset,
+    )
+
+
+def _quota_day(reset_hour_utc: int) -> str:
+    """The provider's current quota day: it rolls over at its daily reset hour."""
+    return (datetime.now(timezone.utc) - timedelta(hours=reset_hour_utc % 24)).date().isoformat()
+
+
 def _seconds_until_hour_utc(hour: int) -> float:
     now = datetime.now(timezone.utc)
     target = now.replace(hour=hour % 24, minute=0, second=0, microsecond=0)
@@ -402,6 +462,11 @@ class AIEngine:
         self._stats: dict[str, ModelStats] = {}
         self._discovered: dict[str, Discovery] = {}
         self._free_only = True
+        self._usage: dict[str, Usage] = {}
+        self._state_file = settings.ai_models_file.with_name(".ai_state.json")
+        self._state_saved = 0.0
+        self._state_timer: threading.Timer | None = None
+        self._restore_state()
 
         self._env_mtime = self._mtime(ENV_FILE)
         self._env_keys = {k for k, v in dotenv_values(ENV_FILE).items() if v}
@@ -471,6 +536,8 @@ class AIEngine:
                         models_url=spec.get("models_url", ""),
                         models_id_field=spec.get("models_id_field", "id"),
                         fields=[dict(f) for f in spec.get("fields", [])],
+                        rpm=spec.get("rpm"),
+                        rpd=spec.get("rpd"),
                     )
                 chain, seen = [], set()
                 for item in data["chain"]:
@@ -484,6 +551,8 @@ class AIEngine:
                         enabled=bool(item.get("enabled", True)),
                         max_input_chars=item.get("max_input_chars"),
                         free=item.get("free") if isinstance(item.get("free"), bool) else None,
+                        rpm=item.get("rpm"),
+                        rpd=item.get("rpd"),
                     )
                     if entry.id not in seen:
                         seen.add(entry.id)
@@ -539,6 +608,7 @@ class AIEngine:
                 provider=str(item.get("provider", "")),
                 model=str(item.get("model", "")),
                 label=str(item.get("label") or item.get("model", "")),
+                tier=str(item.get("tier") or ""),
                 enabled=bool(item.get("enabled", True)),
             )
             if entry.provider in self._providers and entry.model and entry.id not in seen:
@@ -550,50 +620,194 @@ class AIEngine:
         """The default model list in the shape a personal list is stored in."""
         self._load()
         return [
-            {"provider": e.provider, "model": e.model, "label": e.label, **({} if e.enabled else {"enabled": False})}
+            {
+                "provider": e.provider, "model": e.model, "label": e.label,
+                **({"tier": normalise_tier(e.tier)} if normalise_tier(e.tier) else {}),
+                **({} if e.enabled else {"enabled": False}),
+            }
             for e in self._chain
         ]
+
+    # ── saved state ──────────────────────────────────────────────────
+    def _restore_state(self) -> None:
+        """Bring back usage counts and active limits from before a restart."""
+        try:
+            data = json.loads(self._state_file.read_text(encoding="utf-8"))
+            now = time.time()
+            for model_id, saved in data.get("usage", {}).items():
+                self._usage[model_id] = Usage(
+                    day=saved.get("day", ""), today=int(saved.get("today", 0)),
+                    limit=saved.get("limit"), remaining=saved.get("remaining"),
+                    resets_at=float(saved.get("resets_at", 0)),
+                )
+            for provider, model, index, until, reason, kind in data.get("cooldowns", []):
+                if until > now:
+                    self._slots[(provider, model, int(index))] = SlotState(float(until), reason, 1, kind)
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass  # no state yet, or an unreadable file: start clean
+
+    def _save_state(self, force: bool = False) -> None:
+        """Write usage and limits to disk, at most once per STATE_SAVE_INTERVAL unless forced."""
+        now = time.time()
+        with self._lock:
+            if not force and now - self._state_saved < STATE_SAVE_INTERVAL:
+                # Too soon: write once the interval is over, so the latest counts are never lost.
+                if self._state_timer is None:
+                    self._state_timer = threading.Timer(STATE_SAVE_INTERVAL, self._flush_state)
+                    self._state_timer.daemon = True
+                    self._state_timer.start()
+                return
+            self._state_saved = now
+            data = {
+                "usage": {
+                    model_id: {"day": u.day, "today": u.today, "limit": u.limit,
+                               "remaining": u.remaining, "resets_at": u.resets_at}
+                    for model_id, u in self._usage.items() if u.today or u.limit is not None
+                },
+                "cooldowns": [
+                    [provider, model, index, slot.cooldown_until, slot.reason, slot.kind]
+                    for (provider, model, index), slot in self._slots.items() if slot.cooldown_until > now
+                ],
+            }
+        try:
+            scratch = self._state_file.with_suffix(".tmp")
+            scratch.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(scratch, self._state_file)
+        except OSError as exc:
+            log.warning("could not save AI state: %s", exc)
+
+    def _flush_state(self) -> None:
+        with self._lock:
+            self._state_timer = None
+        self._save_state(force=True)
+
+    # ── usage and limits ─────────────────────────────────────────────
+    def _used(self, entry: ModelEntry, provider: Provider) -> Usage:
+        """The model's usage record, rolled over to the provider's current quota day."""
+        usage = self._usage.setdefault(entry.id, Usage())
+        day = _quota_day(provider.daily_reset_utc_hour)
+        if usage.day != day:
+            usage.day, usage.today = day, 0
+        return usage
+
+    def _count_request(self, entry: ModelEntry, provider: Provider) -> None:
+        with self._lock:
+            usage = self._used(entry, provider)
+            usage.today += 1
+            usage.recent.append(time.time())
+
+    def _recent(self, entry: ModelEntry, now: float) -> int:
+        usage = self._usage.get(entry.id)
+        return sum(1 for at in usage.recent if at > now - 60) if usage else 0
+
+    def _note_limits(self, entry: ModelEntry, provider: Provider, key_index: int, headers: httpx.Headers) -> None:
+        """Learn the remaining quota from a response; set the model aside the moment it hits zero."""
+        limit, remaining, reset = _rate_headers(headers)
+        if remaining is None:
+            return
+        with self._lock:
+            usage = self._used(entry, provider)
+            usage.limit, usage.remaining = limit, remaining
+            usage.resets_at = time.time() + reset if reset is not None else 0.0
+            exhausted = remaining == 0 and bool(reset)
+            if exhausted:
+                slot = self._slot(entry, key_index)
+                slot.cooldown_until = time.time() + min(max(reset, 1.0), MAX_COOLDOWN)
+                slot.reason, slot.kind = "Usage limit reached", "limit"
+        if exhausted:
+            self._save_state(force=True)  # a limit must survive a restart
+
+    def _over_known_limit(self, entry: ModelEntry, provider: Provider, now: float) -> bool:
+        """True when a limit written in the configuration says not to send another request yet."""
+        keys = max(1, len(provider.keys()))
+        rpm = entry.rpm or provider.rpm
+        if rpm and self._recent(entry, now) >= rpm * keys:
+            return True  # busy for a few seconds; not worth showing as a limit
+        rpd = entry.rpd or provider.rpd
+        if rpd and self._used(entry, provider).today >= rpd * keys:
+            until = now + _seconds_until_hour_utc(provider.daily_reset_utc_hour)
+            for index in range(keys):
+                slot = self._slot(entry, index)
+                slot.cooldown_until, slot.reason, slot.kind = until, "Daily limit reached", "limit"
+            return True
+        return False
 
     # ── slot state ───────────────────────────────────────────────────
     def _slot(self, entry: ModelEntry, key_index: int) -> SlotState:
         return self._slots.setdefault((entry.provider, entry.model, key_index), SlotState())
 
-    def _blocked_until(self, entry: ModelEntry, key_index: int) -> tuple[float, str]:
+    def _blocked_until(self, entry: ModelEntry, key_index: int) -> tuple[float, str, str]:
+        """(until, reason, kind) while this model can't be used on this key, else (0, "", "")."""
         key_block = self._key_blocks.get((entry.provider, key_index))
         slot = self._slots.get((entry.provider, entry.model, key_index))
         candidates = [s for s in (key_block, slot) if s and s.cooldown_until > time.time()]
         if not candidates:
-            return 0.0, ""
+            return 0.0, "", ""
         worst = max(candidates, key=lambda s: s.cooldown_until)
-        return worst.cooldown_until, worst.reason
+        return worst.cooldown_until, worst.reason, worst.kind or "error"
 
-    def _candidates(self, prefer: str | None,
-                    source: list[ModelEntry] | None = None) -> Iterator[tuple[ModelEntry, Provider, int, str, bool]]:
-        """Yield (entry, provider, key_index, key, is_first_choice) for usable slots."""
+    # ── choosing a model ─────────────────────────────────────────────
+    def _tier(self, entry: ModelEntry) -> str:
+        return normalise_tier(entry.tier) or guess_tier(entry.model, (self._info(entry) or {}).get("name", ""))
+
+    def _pressure(self, entry: ModelEntry, now: float) -> int:
+        """How hard a model is being used; among equals, the least pressed goes first."""
+        rpm = entry.rpm or self._providers[entry.provider].rpm or ASSUMED_RPM
+        pressure = self._recent(entry, now) // max(1, rpm // 3)
+        usage = self._usage.get(entry.id)
+        if usage and usage.limit and usage.remaining is not None and usage.resets_at > now:
+            if usage.remaining / usage.limit < NEARLY_EXHAUSTED:
+                pressure += 3
+        return pressure
+
+    def _plan(self, source: list[ModelEntry] | None, effort: str) -> list[ModelEntry]:
+        """The models that may answer, best fit for this request first."""
         source = [e for e in (self._chain if source is None else source) if e.provider in self._providers]
-        chain = [e for e in source if e.enabled and not self._blocked_as_paid(e)]
-        preferred = self._find(prefer, source)
-        if preferred in chain:
-            chain = [preferred] + [e for e in chain if e is not preferred]
-        top = next((e for e in chain if self._providers[e.provider].ready()), None)
-        for entry in chain:
+        usable = [
+            e for e in source
+            if e.enabled and not self._blocked_as_paid(e) and self._providers[e.provider].ready()
+        ]
+        order = TIER_ORDER.get(effort, TIER_ORDER["standard"])
+        now = time.time()
+        with self._lock:
+            # Stable sort: models that tie keep the order they have in the list.
+            return sorted(usable, key=lambda e: (order.index(self._tier(e)), self._pressure(e, now)))
+
+    def _candidates(self, prefer: str | None, source: list[ModelEntry] | None,
+                    effort: str) -> Iterator[tuple[ModelEntry, Provider, int, str, bool]]:
+        """Yield (entry, provider, key_index, key, second_best) for every slot worth trying.
+
+        `second_best` is True when the model is not what this request would
+        ideally get: not the one the user picked, or of a lesser-fitting tier.
+        """
+        plan = self._plan(source, effort)
+        ideal_tier = self._tier(plan[0]) if plan else ""
+        picked = next((e for e in plan if e.id == prefer), None) if prefer else None
+        if picked:
+            plan = [picked] + [e for e in plan if e is not picked]
+        for entry in plan:
             provider = self._providers[entry.provider]
-            if not provider.ready():
-                continue
+            with self._lock:
+                if self._over_known_limit(entry, provider, time.time()):
+                    continue
             for index, key in enumerate(provider.keys()):
                 with self._lock:
-                    until, _ = self._blocked_until(entry, index)
+                    until = self._blocked_until(entry, index)[0]
                 if until:
                     continue
-                yield entry, provider, index, key, entry is top
+                second_best = entry is not picked if picked else self._tier(entry) != ideal_tier
+                yield entry, provider, index, key, second_best
 
     def _record_success(self, entry: ModelEntry, key_index: int, latency_ms: int) -> None:
         with self._lock:
-            self._slots[(entry.provider, entry.model, key_index)] = SlotState()
+            slot = self._slots.get((entry.provider, entry.model, key_index))
+            if slot and slot.cooldown_until <= time.time():  # keep a limit the response itself announced
+                self._slots[(entry.provider, entry.model, key_index)] = SlotState()
             stats = self._stats.setdefault(entry.id, ModelStats())
             stats.ok += 1
             stats.last_used = time.time()
             stats.last_latency_ms = latency_ms
+        self._save_state()
 
     def _record_failure(self, entry: ModelEntry, provider: Provider, key_index: int, err: ProviderError) -> None:
         with self._lock:
@@ -633,10 +847,12 @@ class AIEngine:
                 # Quotas are per key; an outage or a missing model affects every key alike.
                 shared = err.kind in ("server", "network", "not_found")
                 indexes = range(len(provider.keys())) if shared else [key_index]
+                kind = "limit" if err.kind in ("rate_limit", "daily_quota", "billing") else "error"
                 for index in indexes:
                     target = self._slot(entry, index)
                     target.cooldown_until = time.time() + cooldown
                     target.reason = reason
+                    target.kind = kind
                     target.failures = step + 1
 
         log.warning(
@@ -644,6 +860,7 @@ class AIEngine:
             entry.id, err.kind, err.detail[:120],
             f", cooling down {int(cooldown)}s" if cooldown else "",
         )
+        self._save_state(force=bool(cooldown))
 
     # ── HTTP ─────────────────────────────────────────────────────────
     def _request(self, entry: ModelEntry, provider: Provider, key: str, messages: list[Message],
@@ -660,13 +877,15 @@ class AIEngine:
             headers["Authorization"] = f"Bearer {key}"
         return f"{provider.url()}/chat/completions", headers, payload
 
-    def _call(self, entry: ModelEntry, provider: Provider, key: str, messages: list[Message],
+    def _call(self, entry: ModelEntry, provider: Provider, index: int, key: str, messages: list[Message],
               temperature: float) -> str:
         url, headers, payload = self._request(entry, provider, key, messages, temperature, stream=False)
+        self._count_request(entry, provider)
         try:
             response = self._http.post(url, headers=headers, json=payload)
         except httpx.HTTPError as exc:
             raise ProviderError("network", type(exc).__name__) from exc
+        self._note_limits(entry, provider, index, response.headers)
         if response.status_code != 200:
             raise _classify(response.status_code, response.headers, response.text)
         try:
@@ -678,11 +897,13 @@ class AIEngine:
             raise ProviderError("empty", "empty response")
         return text
 
-    def _stream_call(self, entry: ModelEntry, provider: Provider, key: str, messages: list[Message],
+    def _stream_call(self, entry: ModelEntry, provider: Provider, index: int, key: str, messages: list[Message],
                      temperature: float) -> Iterator[str]:
         url, headers, payload = self._request(entry, provider, key, messages, temperature, stream=True)
+        self._count_request(entry, provider)
         try:
             with self._http.stream("POST", url, headers=headers, json=payload) as response:
+                self._note_limits(entry, provider, index, response.headers)
                 if response.status_code != 200:
                     body = response.read().decode("utf-8", "replace")
                     raise _classify(response.status_code, response.headers, body)
@@ -708,44 +929,56 @@ class AIEngine:
             raise ProviderError("network", type(exc).__name__) from exc
 
     # ── public API ───────────────────────────────────────────────────
-    def complete(self, messages: list[Message], *, temperature: float = 0.7,
-                 prefer: str | None = None, chain: list[ModelEntry] | None = None) -> AIResult:
-        """Return one full answer from the best available model of the given list (default: the shared one)."""
+    def complete(self, messages: list[Message], *, temperature: float = 0.7, prefer: str | None = None,
+                 chain: list[ModelEntry] | None = None, effort: str | None = None) -> AIResult:
+        """Return one full answer from the model that best fits the request.
+
+        `chain` is the list of models to choose from (default: the shared one);
+        `effort` says how demanding the request is, and is judged from the
+        messages when not given.
+        """
         self._load()
-        for entry, provider, index, key, is_top in self._candidates(prefer, chain):
+        effort = effort or classify_messages(messages)
+        failed = False
+        for entry, provider, index, key, second_best in self._candidates(prefer, chain, effort):
             started = time.time()
             try:
-                text = self._call(entry, provider, key, messages, temperature)
+                text = self._call(entry, provider, index, key, messages, temperature)
             except ProviderError as err:
                 self._record_failure(entry, provider, index, err)
+                failed = True
                 continue
             latency = int((time.time() - started) * 1000)
             self._record_success(entry, index, latency)
-            return AIResult(text, entry.provider, entry.model, entry.label, not is_top, latency)
+            return AIResult(text, entry.provider, entry.model, entry.label, second_best or failed, latency, effort)
         raise self._unavailable(chain)
 
-    def stream(self, messages: list[Message], *, temperature: float = 0.7,
-               prefer: str | None = None, chain: list[ModelEntry] | None = None) -> Iterator[AIResult | str]:
+    def stream(self, messages: list[Message], *, temperature: float = 0.7, prefer: str | None = None,
+               chain: list[ModelEntry] | None = None, effort: str | None = None) -> Iterator[AIResult | str]:
         """Yield an AIResult header (text empty) once a model starts answering, then text chunks.
 
         Falling back is only possible before the first chunk; after that a
         failure raises AIInterrupted and the caller keeps what it received.
         """
         self._load()
-        for entry, provider, index, key, is_top in self._candidates(prefer, chain):
+        effort = effort or classify_messages(messages)
+        failed = False
+        for entry, provider, index, key, second_best in self._candidates(prefer, chain, effort):
             started = time.time()
-            chunks = self._stream_call(entry, provider, key, messages, temperature)
+            chunks = self._stream_call(entry, provider, index, key, messages, temperature)
             try:
                 first = next(chunks)
             except StopIteration:
                 self._record_failure(entry, provider, index, ProviderError("empty", "empty response"))
+                failed = True
                 continue
             except ProviderError as err:
                 self._record_failure(entry, provider, index, err)
+                failed = True
                 continue
             self._record_success(entry, index, int((time.time() - started) * 1000))
             try:
-                yield AIResult("", entry.provider, entry.model, entry.label, not is_top)
+                yield AIResult("", entry.provider, entry.model, entry.label, second_best or failed, effort=effort)
                 yield first
                 yield from chunks
             except ProviderError as err:
@@ -769,7 +1002,7 @@ class AIEngine:
         for index, key in enumerate(provider.keys()):
             started = time.time()
             try:
-                text = self._call(entry, provider, key, messages, 0.0)
+                text = self._call(entry, provider, index, key, messages, 0.0)
             except ProviderError as err:
                 self._record_failure(entry, provider, index, err)
                 last_error = f"{err.kind.replace('_', ' ')}: {err.detail}"
@@ -808,17 +1041,17 @@ class AIEngine:
             wait = max(1, int(soonest - time.time()))
             pretty = f"{wait} seconds" if wait < 90 else f"{round(wait / 60)} minutes"
             return AIUnavailable(
-                f"Every AI model is rate-limited or unavailable right now. The next one frees up in about {pretty}.",
+                f"Every AI model has reached its usage limit or is unavailable right now. The next one frees up in about {pretty}.",
                 retry_in=wait,
             )
         return AIUnavailable("None of the AI models could answer this request. Please try again.")
 
-    def _model_cooldown(self, entry: ModelEntry) -> tuple[float, str]:
-        """(until, reason) if every key for this model is cooling down, else (0, '')."""
+    def _model_cooldown(self, entry: ModelEntry) -> tuple[float, str, str]:
+        """(until, reason, kind) if every key for this model is set aside, else (0, "", "")."""
         provider = self._providers[entry.provider]
         blocks = [self._blocked_until(entry, i) for i in range(len(provider.keys()))]
-        if not blocks or any(until == 0 for until, _ in blocks):
-            return 0.0, ""
+        if not blocks or any(until == 0 for until, _, _ in blocks):
+            return 0.0, "", ""
         return min(blocks, key=lambda b: b[0])
 
     def discover(self, force: bool = False, only: str | None = None) -> None:
@@ -902,8 +1135,13 @@ class AIEngine:
         """Live state of a user's own list, or of the shared default list when none is given."""
         self._load()
         now = time.time()
-        chain, active = [], None
+        chain = []
         personal = source is not None
+        # What Auto would pick right now for each kind of request.
+        routes = {
+            effort: next((entry.id for entry, *_ in self._candidates(None, source, effort)), None)
+            for effort in TIER_ORDER
+        }
         with self._lock:
             source = [e for e in (self._chain if source is None else source) if e.provider in self._providers]
             for position, entry in enumerate(source, start=1):
@@ -911,7 +1149,8 @@ class AIEngine:
                 stats = self._stats.get(entry.id, ModelStats())
                 listed_models = self._discovered.get(provider.id, Discovery()).models
                 info = self._info(entry) or {}
-                until, reason = (0.0, "")
+                until, reason, kind = 0.0, "", ""
+                usage = self._used(entry, provider)
                 if not entry.enabled:
                     state = "disabled"
                 elif not provider.ready():
@@ -919,10 +1158,8 @@ class AIEngine:
                 elif self._blocked_as_paid(entry):
                     state = "blocked"
                 else:
-                    until, reason = self._model_cooldown(entry)
-                    state = "cooldown" if until else "ready"
-                if state == "ready" and active is None:
-                    active = entry.id
+                    until, reason, kind = self._model_cooldown(entry)
+                    state = ("limit" if kind == "limit" else "cooldown") if until else "ready"
                 chain.append({
                     "id": entry.id,
                     "position": position,
@@ -930,7 +1167,12 @@ class AIEngine:
                     "provider_name": provider.name,
                     "model": entry.model,
                     "label": entry.label,
-                    "tier": entry.tier,
+                    "tier": self._tier(entry),
+                    "tier_auto": not normalise_tier(entry.tier),
+                    "used_today": usage.today,
+                    # What the provider last reported, while that report is still current.
+                    "limit": usage.limit if usage.resets_at > now else None,
+                    "remaining": usage.remaining if usage.resets_at > now else None,
                     "free": self._is_free(entry),
                     "context": info.get("context"),
                     "state": state,
@@ -975,7 +1217,8 @@ class AIEngine:
                     "error": found.error if p.ready() else "",
                 })
         return {
-            "active": active,
+            "active": routes["standard"],
+            "routes": routes,
             "chain": chain,
             "providers": providers,
             "free_only": self._free_only,

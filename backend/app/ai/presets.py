@@ -9,6 +9,10 @@ inherits these values, so the file only has to state what differs.
   auto  per model: "free_pattern" if set, else the price the provider reports
         in its model list, else unknown
 Free tiers change often - "free_tier" is the note shown next to the provider.
+
+"rpm" / "rpd" are a provider's published requests-per-minute / per-day limit
+for one model on one key, when it is known. The engine paces itself to them;
+without them it still learns limits from each response.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ PRESETS: dict[str, dict] = {
         "key_env": "NVIDIA_API_KEY",
         "signup_url": "https://build.nvidia.com",
         "free": "all",
+        "rpm": 40,
         "free_tier": "Free endpoints, about 40 requests/min. Meant for prototyping.",
     },
     "mistral": {
@@ -57,6 +62,7 @@ PRESETS: dict[str, dict] = {
         "headers": {"X-Title": "Zyqra"},
         "signup_url": "https://openrouter.ai/keys",
         "free": "auto",
+        "rpm": 20,
         "free_tier": "Hundreds of models; the ones priced at zero are free: 20 requests/min, 50/day (1,000/day after a one-time $10 top-up).",
     },
     "cloudflare": {

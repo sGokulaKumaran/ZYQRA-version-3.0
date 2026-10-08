@@ -280,7 +280,8 @@ def add_model(provider_id: str, model: str, label: str) -> str:
     return _update(change)
 
 
-def update_model(model_id: str, *, enabled: bool | None, label: str | None, free: str | None) -> None:
+def update_model(model_id: str, *, enabled: bool | None, label: str | None, free: str | None,
+                 tier: str | None = None) -> None:
     def change(data: dict) -> None:
         item = _entry(data, model_id)
         if enabled is not None:
@@ -289,6 +290,10 @@ def update_model(model_id: str, *, enabled: bool | None, label: str | None, free
             if not label.strip():
                 raise ConfigError("The name can't be empty.")
             item["label"] = label.strip()[:60]
+        if tier == "auto":
+            item.pop("tier", None)  # back to judging it from the model's name
+        elif tier is not None:
+            item["tier"] = tier
         if free == "auto":
             item.pop("free", None)
         elif free is not None:
@@ -300,15 +305,6 @@ def update_model(model_id: str, *, enabled: bool | None, label: str | None, free
 def remove_model(model_id: str) -> None:
     def change(data: dict) -> None:
         data["chain"].remove(_entry(data, model_id))
-
-    _update(change)
-
-
-def reorder(model_ids: list[str]) -> None:
-    """Put the chain in the given order; models not mentioned keep their place at the end."""
-    def change(data: dict) -> None:
-        rank = {model_id: index for index, model_id in enumerate(model_ids)}
-        data["chain"].sort(key=lambda i: rank.get(f"{i['provider']}:{i['model']}", len(rank)))
 
     _update(change)
 

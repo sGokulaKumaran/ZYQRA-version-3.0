@@ -141,7 +141,8 @@ def draft_plan(body: PlanRequest, user: models.User = Depends(get_current_user))
     days = (body.deadline - body.start).days + 1
     max_tasks = max(3, min(MAX_PLAN_TASKS, days * 2))
 
-    result = complete_for(user, 
+    result = complete_for(
+        user, "standard",
         [{"role": "user", "content": prompts.study_plan(
             body.goal.strip(), body.start.isoformat(), body.deadline.isoformat(), body.hours_per_day, max_tasks
         )}],

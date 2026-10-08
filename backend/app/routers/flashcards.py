@@ -202,7 +202,8 @@ def generate(body: GenerateRequest, user: models.User = Depends(get_current_user
         raise HTTPException(status_code=422, detail="Enter a topic or choose a note to build cards from.")
     topic = topic or "Study material"
 
-    result = complete_for(user, 
+    result = complete_for(
+        user, "standard",
         [{"role": "user", "content": prompts.flashcards(topic, body.count, source)}], temperature=0.5
     )
     cards = _clean_cards(extract_json_array(result.text))[: body.count]
@@ -215,7 +216,8 @@ def generate(body: GenerateRequest, user: models.User = Depends(get_current_user
 @router.post("/from-mistakes", status_code=201)
 def from_mistakes(body: MistakesRequest, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     pairs = [(m.question, m.answer) for m in body.items]
-    result = complete_for(user, 
+    result = complete_for(
+        user, "standard",
         [{"role": "user", "content": prompts.flashcards_from_mistakes(pairs)}], temperature=0.4
     )
     # If the model's output can't be used, the raw question/answer pairs still make valid cards.

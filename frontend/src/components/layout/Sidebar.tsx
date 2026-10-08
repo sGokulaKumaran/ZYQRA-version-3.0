@@ -12,17 +12,17 @@ interface SidebarProps {
   onNavigate: () => void;
 }
 
-/** Summarises the fallback chain as one line for the sidebar chip. */
+/** Summarises the AI engine as one line for the sidebar chip. */
 function useEngineSummary() {
   const { ai } = useApp();
   if (!ai) return { tone: "", title: "AI engine", text: "Connecting…" };
-  const usable = ai.chain.filter((m) => m.state === "ready" || m.state === "cooldown");
-  if (usable.length === 0) return { tone: "bad", title: "AI engine", text: "Add an API key" };
-  const active = ai.chain.find((m) => m.id === ai.active);
-  if (!active) return { tone: "bad", title: "All models cooling down", text: "Retrying soon" };
-  return active.id === usable[0].id
-    ? { tone: "ok", title: "AI engine", text: active.label }
-    : { tone: "warn", title: "Fallback active", text: active.label };
+  const usable = ai.chain.filter((m) => m.state === "ready" || m.state === "limit" || m.state === "cooldown");
+  if (usable.length === 0) return { tone: "bad", title: "AI engine", text: ai.can_manage ? "Add an API key" : "Not set up yet" };
+  const ready = usable.filter((m) => m.state === "ready").length;
+  if (ready === 0) return { tone: "bad", title: "All models at their limit", text: "Back soon" };
+  return ready === usable.length
+    ? { tone: "ok", title: "AI engine · Auto", text: `${ready} ${ready === 1 ? "model" : "models"} ready` }
+    : { tone: "warn", title: "AI engine · Auto", text: `${ready} of ${usable.length} models ready` };
 }
 
 export default function Sidebar({ onToggleRail, onOpenPalette, onNavigate }: SidebarProps) {

@@ -5,7 +5,7 @@ import { formatWait } from "../../lib/format";
 import type { ChainModel } from "../../lib/types";
 
 interface ModelPickerProps {
-  /** The models that may answer, in fallback order. */
+  /** The user's models; ones at their limit are listed but can't be picked. */
   models: ChainModel[];
   /** Selected model id, or null for automatic. */
   value: string | null;
@@ -60,7 +60,7 @@ export default function ModelPicker({ models, value, onChange, onManage }: Model
             )}
             <div className="model-menu-list">
               {!query.trim() && (
-                <MenuItem icon="sparkles" label="Auto" hint="Best available model, with automatic fallback" active={!selected} onClick={() => pick(null)} />
+                <MenuItem icon="sparkles" label="Auto" hint="Matches a model to each question and skips any at its limit" active={!selected} onClick={() => pick(null)} />
               )}
               {groups.map((group) => (
                 <div key={group.name}>
@@ -70,12 +70,18 @@ export default function ModelPicker({ models, value, onChange, onManage }: Model
                       key={model.id}
                       type="button"
                       role="menuitem"
-                      className={`menu-item ${model.id === selected?.id ? "on" : ""} ${model.state === "cooldown" ? "resting" : ""}`}
+                      className={`menu-item ${model.id === selected?.id ? "on" : ""}`}
+                      disabled={model.state !== "ready"}
+                      title={model.state === "ready" ? undefined : "This model can't be used right now."}
                       onClick={() => pick(model.id)}
                     >
                       <span className="model-menu-name">
                         {model.label}
-                        {model.state === "cooldown" && <small>Resting · back in {formatWait(model.cooldown_seconds)}</small>}
+                        {model.state !== "ready" && (
+                          <small>
+                            {model.state === "limit" ? "Limit reached" : "Not responding"} · back in {formatWait(model.cooldown_seconds)}
+                          </small>
+                        )}
                       </span>
                       <FreeBadge free={model.free} />
                       {model.id === selected?.id && <Icon name="check" size={15} />}

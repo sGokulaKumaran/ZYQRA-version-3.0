@@ -56,10 +56,7 @@ class ModelUpdate(ModelRef):
     enabled: bool | None = None
     label: str | None = Field(default=None, max_length=60)
     free: Literal["auto", "free", "paid"] | None = None
-
-
-class Order(BaseModel):
-    ids: list[str] = Field(max_length=500)
+    tier: Literal["auto", "strong", "balanced", "light"] | None = None
 
 
 class EngineSettings(BaseModel):
@@ -186,9 +183,9 @@ def add_model(body: ModelAdd, user: models.User = Depends(get_current_user), db:
 @router.patch("/models")
 def update_model(body: ModelUpdate, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     if user.is_admin:
-        _apply(store.update_model, body.id, enabled=body.enabled, label=body.label, free=body.free)
+        _apply(store.update_model, body.id, enabled=body.enabled, label=body.label, free=body.free, tier=body.tier)
     else:
-        personal.update(db, user, body.id, enabled=body.enabled, label=body.label)
+        personal.update(db, user, body.id, enabled=body.enabled, label=body.label, tier=body.tier)
     return _status(user)
 
 
@@ -198,15 +195,6 @@ def remove_model(body: ModelRef, user: models.User = Depends(get_current_user), 
         _apply(store.remove_model, body.id)
     else:
         personal.remove(db, user, body.id)
-    return _status(user)
-
-
-@router.put("/models/order")
-def reorder_models(body: Order, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if user.is_admin:
-        _apply(store.reorder, body.ids)
-    else:
-        personal.reorder(db, user, body.ids)
     return _status(user)
 
 

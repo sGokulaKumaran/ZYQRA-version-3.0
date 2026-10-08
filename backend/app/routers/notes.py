@@ -97,7 +97,8 @@ def run_action(note_id: int, body: NoteAction, user: models.User = Depends(get_c
     content = (note.content or "").strip()
     if not content:
         raise HTTPException(status_code=422, detail="This note is empty — write something first.")
-    result = complete_for(user, 
+    result = complete_for(
+        user, "standard",
         [
             {"role": "system", "content": "You are a study assistant. Reply in Markdown with only the requested result."},
             {"role": "user", "content": prompts.note_action(body.action, note.title or "", content[:MAX_SOURCE_CHARS])},

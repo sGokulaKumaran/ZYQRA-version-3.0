@@ -99,13 +99,19 @@ export function ProgressRing({ value, size = 96, stroke = 8, tone, children }: P
   );
 }
 
-/** "Answered by …" tag; flags when the engine had to fall back from the top model. */
-export function ModelBadge({ model }: { model: Pick<ModelMeta, "label" | "fallback"> }) {
+const EFFORT_REASON = {
+  simple: "Auto chose a fast model for this quick question.",
+  standard: "Auto chose this model for an everyday question.",
+  complex: "Auto chose a powerful model for this harder question.",
+} as const;
+
+/** "Answered by …" tag; flags when the best-fitting model could not be used. */
+export function ModelBadge({ model }: { model: Pick<ModelMeta, "label" | "fallback" | "effort"> }) {
+  const reason = model.fallback
+    ? "The best-fitting model was at its limit or not responding, so the next best one answered."
+    : model.effort ? EFFORT_REASON[model.effort] : "Answered by this model";
   return (
-    <span
-      className={`badge ${model.fallback ? "warning" : ""}`}
-      title={model.fallback ? "A higher-priority model was unavailable, so Zyqra fell back to this one." : "Answered by this model"}
-    >
+    <span className={`badge ${model.fallback ? "warning" : ""}`} title={reason}>
       <Icon name={model.fallback ? "repeat" : "sparkles"} size={12} />
       {model.label}
     </span>

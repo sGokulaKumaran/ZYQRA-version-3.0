@@ -4,6 +4,9 @@
 !.env.example
 backend/.secret_key
 
+# Usage counts and active limits of the AI engine
+.ai_state.json
+
 # Python
 __pycache__/
 *.py[cod]
